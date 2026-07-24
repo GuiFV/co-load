@@ -1,0 +1,50 @@
+[project]
+name = "coload"
+version = "0.1.0"
+description = "Co-load multiple inference engines (Ollama, vLLM, ...) onto one GPU without the VRAM fights."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Guilherme Viotti", email = "guilhermeviotti@gmail.com" }]
+keywords = ["gpu", "vram", "ollama", "vllm", "llm", "orchestrator", "inference"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "nvidia-ml-py>=12.535",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+coload = "coload.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/GuiFV/coload"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coload"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.uv]
+package = true

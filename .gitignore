@@ -1,0 +1,80 @@
+# ---- IDEs / editors ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+z-files/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ---- Packaging / tooling ----
+.uv/
+uv.lock
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---- Test / coverage / type-check caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- coload runtime artifacts ----
+# Learned VRAM estimates cached to disk, local overrides, logs
+*.log
+logs/
+*.local.yaml
+*.local.yml
+config.local.yaml
+learned_estimates.json
+.coload/

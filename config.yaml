@@ -1,0 +1,54 @@
+# coload default configuration. `coload serve` reads this file as-is.
+# The README's "What to change and why" section walks through every knob.
+
+gpu: 0                      # NVML index of the GPU to arbitrate
+
+# Share of TOTAL VRAM always kept free as headroom (fragmentation, CUDA
+# context growth, fluctuations from other processes). User-settable;
+# defaults to 0.10 (10%). Must be >= 0 and < 1.
+buffer_pct: 0.10
+
+idle_ttl_seconds: 900       # stop a backend after this long idle (0 disables)
+watchdog_interval_s: 10     # how often the watchdog polls total VRAM
+
+host: "127.0.0.1"           # gateway bind address
+port: 8800                  # gateway port
+
+# Learned VRAM estimates are cached here after real loads refine the seeds.
+estimates_path: ".coload/learned_estimates.json"
+
+alert:
+  channels: [log]           # add "webhook" to POST alerts as JSON
+  # webhook_url: "http://localhost:9999/alert"
+
+engines:
+  # Works out of the box if the Ollama daemon is running (default port).
+  # Swap the model names for ones you have pulled (`ollama list`).
+  ollama:
+    kind: ollama
+    base_url: "http://localhost:11434"
+    models:
+      "llama3.2": { est_vram_gb: 3 }
+      "nomic-embed-text": { est_vram_gb: 1 }
+
+  # Works out of the box with Docker + the bundled docker-compose.yaml.
+  # coload exports COLOAD_MODEL and COLOAD_BUDGET_FRAC (the live budget,
+  # measured right before the load) and compose interpolates them.
+  vllm:
+    kind: vllm
+    base_url: "http://localhost:8000"
+    start: "docker compose up -d vllm"
+    stop: "docker compose stop vllm"
+    models:
+      "Qwen/Qwen2.5-0.5B-Instruct": { est_vram_gb: 2 }
+
+  # Bare-metal alternative (vllm installed on the host, no docker):
+  # {model} and {budget_frac} are filled in by coload at load time.
+  # `stop` is optional here; without it coload terminates the process it
+  # started, which is exactly right for a non-detached `vllm serve`.
+  # vllm-bare:
+  #   kind: vllm
+  #   base_url: "http://localhost:8001"
+  #   start: "vllm serve {model} --gpu-memory-utilization {budget_frac} --port 8001"
+  #   models:
+  #     "Qwen/Qwen2.5-7B-Instruct": { est_vram_gb: 16 }

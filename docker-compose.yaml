@@ -1,0 +1,30 @@
+# Default vLLM service, driven by coload (see the vllm engine in config.yaml).
+#
+# coload starts it with `docker compose up -d vllm` and stops it with
+# `docker compose stop vllm`; the stop command is what frees the VRAM when
+# the idle TTL fires, since `up -d` detaches.
+#
+# COLOAD_MODEL and COLOAD_BUDGET_FRAC are exported by coload at load time:
+# the requested model, and the live VRAM budget (as a fraction of the card)
+# measured immediately before the load. The defaults after `:-` apply only
+# when you run compose by hand.
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model ${COLOAD_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
+      --gpu-memory-utilization ${COLOAD_BUDGET_FRAC:-0.70}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
