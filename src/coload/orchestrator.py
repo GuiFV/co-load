@@ -30,6 +30,10 @@ from .vram import GIB, VramProbe
 
 logger = logging.getLogger("coload.orchestrator")
 
+# Seconds to wait after an eviction before re-probing, so the driver's free
+# figure reflects the release. Tests may set this to 0.
+EVICT_SETTLE_S = 0.5
+
 
 def _gb(n: int) -> float:
     return round(n / GIB, 2)
@@ -102,6 +106,9 @@ class Orchestrator:
             budget = before.budget(self._config.buffer_pct)
             needed = self._estimates.estimate(model)
 
+            if needed > budget and self._config.auto_evict_idle:
+                budget = await self._evict_idle_to_fit(model, needed)
+                before = self._probe.read()  # re-measure for observe() below
             if needed > budget:
                 await self._refuse(model, needed, budget, before.free)
 
@@ -115,6 +122,35 @@ class Orchestrator:
             self._estimates.observe(model, after.used - before.used)
             self._touch(model)
             return backend.proxy_url(model)
+
+    async def _evict_idle_to_fit(self, model: str, needed: int) -> int:
+        """Evict coload-loaded models (LRU first) until ``model`` fits.
+
+        Only models this orchestrator has itself touched (``_last_used``) are
+        candidates — out-of-band GPU users are never evicted, only alerted
+        about. Called with the load-mutex held. Returns the final budget.
+        """
+        candidates = sorted(
+            (ts, m) for m, ts in self._last_used.items() if m != model
+        )
+        budget = self._probe.read().budget(self._config.buffer_pct)
+        for _, victim in candidates:
+            if needed <= budget:
+                break
+            backend = self._backends[self._config.engine_for_model(victim)]
+            if not await backend.is_ready(victim):
+                self._last_used.pop(victim, None)
+                continue
+            logger.info(
+                "auto-evict: unloading idle '%s' to make room for '%s'",
+                victim, model,
+            )
+            await backend.unload(victim)
+            self._last_used.pop(victim, None)
+            if EVICT_SETTLE_S:  # let the driver's free figure catch up
+                await asyncio.sleep(EVICT_SETTLE_S)
+            budget = self._probe.read().budget(self._config.buffer_pct)
+        return budget
 
     async def _refuse(self, model: str, needed: int, budget: int, free: int) -> None:
         resident = await self._resident_map()

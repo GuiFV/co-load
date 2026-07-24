@@ -11,6 +11,12 @@ buffer_pct: 0.10
 idle_ttl_seconds: 900       # stop a backend after this long idle (0 disables)
 watchdog_interval_s: 10     # how often the watchdog polls total VRAM
 
+# Opt-in: when a request doesn't fit, evict models COLOAD ITSELF loaded
+# (least-recently-used first) to make room before refusing. Out-of-band GPU
+# users are never evicted, only alerted about. Enable for workloads that
+# alternate between models too big to co-reside on the card.
+auto_evict_idle: false
+
 host: "127.0.0.1"           # gateway bind address
 port: 8800                  # gateway port
 

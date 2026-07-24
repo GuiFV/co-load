@@ -198,6 +198,122 @@ class TestIdleTtl:
         assert await orch.stop_idle() == []
 
 
+class TestAutoEvictIdle:
+    """Opt-in eviction of coload-loaded models when a request doesn't fit.
+
+    Only models the orchestrator itself touched are candidates (LRU first);
+    out-of-band residents are never evicted. Default is off.
+    """
+
+    def _parts(self, tmp_path, clock, alerter, probe, total_gib=32):
+        config = Config.model_validate({
+            "buffer_pct": 0.10,
+            "auto_evict_idle": True,
+            "engines": {
+                "oll": {
+                    "kind": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "models": {
+                        "tiny": {"est_vram_gb": 1},
+                        "small": {"est_vram_gb": 8},
+                        "big": {"est_vram_gb": 20},
+                    },
+                },
+            },
+        })
+        backends = {"oll": FakeBackend("oll")}
+        estimates = EstimateStore(
+            tmp_path / "learned.json",
+            seeds={"tiny": 1 * GIB, "small": 8 * GIB, "big": 20 * GIB},
+        )
+        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+        return orch, backends["oll"]
+
+    async def test_evicts_idle_model_then_loads(self, tmp_path, clock, alerter, monkeypatch):
+        monkeypatch.setattr("coload.orchestrator.EVICT_SETTLE_S", 0)
+        G = GIB
+        probe = FakeProbe(
+            VramSnapshot(32 * G, 2 * G),   # small: pre-load
+            VramSnapshot(32 * G, 10 * G),  # small: post-load observe
+            VramSnapshot(32 * G, 10 * G),  # big: pre-load (no fit: budget 18.8)
+            VramSnapshot(32 * G, 10 * G),  # big: evict-loop initial budget
+            VramSnapshot(32 * G, 2 * G),   # big: after evicting small (fits)
+            VramSnapshot(32 * G, 2 * G),   # big: re-measured 'before'
+            VramSnapshot(32 * G, 22 * G),  # big: post-load observe
+        )
+        orch, backend = self._parts(tmp_path, clock, alerter, probe)
+
+        await orch.ensure_ready("small")
+        await orch.ensure_ready("big")
+
+        assert backend.unloads == ["small"]
+        assert [m for m, *_ in backend.loads] == ["small", "big"]
+
+    async def test_evicts_lru_first_and_stops_when_enough(
+        self, tmp_path, clock, alerter, monkeypatch
+    ):
+        monkeypatch.setattr("coload.orchestrator.EVICT_SETTLE_S", 0)
+        G = GIB
+        probe = FakeProbe(
+            VramSnapshot(32 * G, 2 * G),   # small: pre-load
+            VramSnapshot(32 * G, 10 * G),  # small: post-load
+            VramSnapshot(32 * G, 10 * G),  # tiny: pre-load
+            VramSnapshot(32 * G, 11 * G),  # tiny: post-load
+            VramSnapshot(32 * G, 11 * G),  # big: pre-load (no fit)
+            VramSnapshot(32 * G, 11 * G),  # big: evict-loop initial
+            VramSnapshot(32 * G, 3 * G),   # big: after evicting small (fits)
+            VramSnapshot(32 * G, 3 * G),   # big: re-measured 'before'
+            VramSnapshot(32 * G, 23 * G),  # big: post-load observe
+        )
+        orch, backend = self._parts(tmp_path, clock, alerter, probe)
+
+        await orch.ensure_ready("small")   # older -> LRU victim
+        clock.advance(10)
+        await orch.ensure_ready("tiny")    # newer -> survives
+        await orch.ensure_ready("big")
+
+        assert backend.unloads == ["small"]
+        assert await backend.is_ready("tiny")
+
+    async def test_never_evicts_out_of_band_residents(
+        self, tmp_path, clock, alerter, monkeypatch
+    ):
+        monkeypatch.setattr("coload.orchestrator.EVICT_SETTLE_S", 0)
+        G = GIB
+        probe = FakeProbe(VramSnapshot(32 * G, 12 * G))  # budget 16.8 < 20
+        orch, backend = self._parts(tmp_path, clock, alerter, probe)
+        backend.ready.add("small")  # resident, but NOT loaded via coload
+
+        with pytest.raises(NotEnoughVram):
+            await orch.ensure_ready("big")
+
+        assert backend.unloads == []          # out-of-band: never evicted
+        assert len(alerter.alerts) == 1       # refusal still alerts the human
+
+    async def test_refuses_when_eviction_is_not_enough(
+        self, tmp_path, clock, alerter, monkeypatch
+    ):
+        monkeypatch.setattr("coload.orchestrator.EVICT_SETTLE_S", 0)
+        G = GIB
+        probe = FakeProbe(
+            VramSnapshot(24 * G, 4 * G),   # small: pre-load
+            VramSnapshot(24 * G, 12 * G),  # small: post-load
+            VramSnapshot(24 * G, 12 * G),  # big: pre-load (no fit)
+            VramSnapshot(24 * G, 12 * G),  # big: evict-loop initial
+            VramSnapshot(24 * G, 4 * G),   # after evicting small: budget 17.6, still < 20
+            VramSnapshot(24 * G, 4 * G),   # re-measured 'before'
+        )
+        orch, backend = self._parts(tmp_path, clock, alerter, probe, total_gib=24)
+
+        await orch.ensure_ready("small")
+        with pytest.raises(NotEnoughVram):
+            await orch.ensure_ready("big")
+
+        assert backend.unloads == ["small"]           # tried what it could
+        assert "big" not in {m for m, *_ in backend.loads}
+        assert len(alerter.alerts) == 1
+
+
 class TestStatus:
     async def test_status_reports_vram_and_residents(self, parts):
         orch, _, backends, *_ = parts

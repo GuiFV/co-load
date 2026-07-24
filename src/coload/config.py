@@ -66,6 +66,12 @@ class Config(BaseModel):
     gpu: int = 0
     buffer_pct: float = Field(default=0.10, ge=0.0, lt=1.0)
     idle_ttl_seconds: float = Field(default=900, ge=0)
+    # Opt-in: when a requested model doesn't fit, evict models COLOAD ITSELF
+    # loaded (least-recently-used first) to make room, before refusing. Never
+    # touches out-of-band GPU users — those are only ever alerted about.
+    # Needed for workloads that legitimately alternate between models too big
+    # to co-reside (e.g. a pipeline phase-switching 12b -> 31b on one card).
+    auto_evict_idle: bool = False
     watchdog_interval_s: float = Field(default=10, gt=0)
     host: str = "127.0.0.1"
     port: int = 8800

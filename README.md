@@ -111,6 +111,7 @@ The defaults in [`config.yaml`](config.yaml) run as-is. What to change, and why:
 | `gpu` | `0` | NVML index of the GPU to arbitrate |
 | `buffer_pct` | `0.10` | **User-settable.** Share of total VRAM always kept free as headroom. `[0, 1)` |
 | `idle_ttl_seconds` | `900` | Stop a backend after this long idle (`0` disables) |
+| `auto_evict_idle` | `false` | Opt-in: when a request doesn't fit, evict models **coload itself loaded** (LRU first) to make room before refusing. Out-of-band GPU users are still never evicted, only alerted about. For workloads that alternate between models too big to co-reside |
 | `watchdog_interval_s` | `10` | Watchdog poll interval |
 | `host` / `port` | `127.0.0.1` / `8800` | Gateway bind |
 | `estimates_path` | `.coload/learned_estimates.json` | Where learned VRAM figures are cached |

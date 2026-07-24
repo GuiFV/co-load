@@ -20,7 +20,9 @@ class OllamaBackend(Backend):
         self._client = client or httpx.AsyncClient(base_url=self._base_url, timeout=300.0)
 
     async def is_ready(self, model: str) -> bool:
-        return model in await self.resident_models()
+        # Ollama reports "name:tag"; a bare configured name matches its :latest.
+        resident = await self.resident_models()
+        return model in resident or f"{model}:latest" in resident
 
     async def load(self, model: str, budget_bytes: int, total_bytes: int) -> None:
         # An empty generate with keep_alive pins the model into VRAM. Ollama
