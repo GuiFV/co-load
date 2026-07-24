@@ -25,6 +25,14 @@ class OllamaSim:
     def __init__(self):
         self.resident = []
         self.requests = []
+        self.embed_only: set[str] = set()  # embedding models 400 on /api/generate
+
+    def _apply_keep_alive(self, body):
+        if body.get("keep_alive") == 0:
+            if body["model"] in self.resident:
+                self.resident.remove(body["model"])
+        else:
+            self.resident.append(body["model"])
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -35,12 +43,16 @@ class OllamaSim:
             )
         if path == "/api/generate":
             body = json.loads(request.content)
-            if body.get("keep_alive") == 0:
-                if body["model"] in self.resident:
-                    self.resident.remove(body["model"])
-            else:
-                self.resident.append(body["model"])
+            if body["model"] in self.embed_only:  # real Ollama behavior
+                return httpx.Response(
+                    400, json={"error": f'"{body["model"]}" does not support generate'}
+                )
+            self._apply_keep_alive(body)
             return httpx.Response(200, json={"done": True})
+        if path == "/api/embed":
+            body = json.loads(request.content)
+            self._apply_keep_alive(body)
+            return httpx.Response(200, json={"embeddings": []})
         return httpx.Response(404)
 
 
@@ -87,6 +99,22 @@ class TestOllamaBackend:
         backend = OllamaBackend("ollama", "http://localhost:11434", client=client)
         with pytest.raises(BackendError):
             await backend.load("m", budget_bytes=GIB, total_bytes=2 * GIB)
+
+    async def test_load_embedding_model_falls_back_to_embed_api(self, ollama, ollama_sim):
+        # Embedding models 400 on /api/generate; the adapter must pin them
+        # via /api/embed instead.
+        ollama_sim.embed_only.add("nomic-embed-text")
+        await ollama.load("nomic-embed-text", budget_bytes=GIB, total_bytes=24 * GIB)
+        emb = [r for r in ollama_sim.requests if r.url.path == "/api/embed"]
+        body = json.loads(emb[0].content)
+        assert body["keep_alive"] == -1
+        assert await ollama.is_ready("nomic-embed-text")
+
+    async def test_unload_embedding_model_falls_back_to_embed_api(self, ollama, ollama_sim):
+        ollama_sim.embed_only.add("nomic-embed-text")
+        await ollama.load("nomic-embed-text", budget_bytes=GIB, total_bytes=24 * GIB)
+        await ollama.unload("nomic-embed-text")
+        assert ollama_sim.resident == []
 
     async def test_proxy_target_is_base_url(self, ollama):
         assert ollama.proxy_url("gemma:12b") == "http://localhost:11434"

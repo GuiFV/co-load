@@ -24,26 +24,32 @@ class OllamaBackend(Backend):
         resident = await self.resident_models()
         return model in resident or f"{model}:latest" in resident
 
-    async def load(self, model: str, budget_bytes: int, total_bytes: int) -> None:
-        # An empty generate with keep_alive pins the model into VRAM. Ollama
-        # sizes itself; budget_bytes is advisory here (the fit check already
-        # ran against the estimate).
+    async def _keep_alive(self, model: str, keep_alive: int, verb: str) -> None:
+        """Pin (keep_alive=-1) or evict (0) a model.
+
+        An empty /api/generate does this for generative models, but embedding
+        models 400 on generate — for those, fall back to /api/embed, which
+        honors keep_alive the same way. Ollama sizes itself; the fit check
+        already ran against the estimate.
+        """
         try:
             resp = await self._client.post(
-                "/api/generate", json={"model": model, "keep_alive": -1}
+                "/api/generate", json={"model": model, "keep_alive": keep_alive}
             )
+            if resp.status_code == 400:  # embedding model: cannot generate
+                resp = await self._client.post(
+                    "/api/embed",
+                    json={"model": model, "input": "", "keep_alive": keep_alive},
+                )
             resp.raise_for_status()
         except httpx.HTTPError as exc:
-            raise BackendError(f"ollama failed to load '{model}': {exc}") from exc
+            raise BackendError(f"ollama failed to {verb} '{model}': {exc}") from exc
+
+    async def load(self, model: str, budget_bytes: int, total_bytes: int) -> None:
+        await self._keep_alive(model, -1, "load")
 
     async def unload(self, model: str) -> None:
-        try:
-            resp = await self._client.post(
-                "/api/generate", json={"model": model, "keep_alive": 0}
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise BackendError(f"ollama failed to unload '{model}': {exc}") from exc
+        await self._keep_alive(model, 0, "unload")
 
     async def resident_models(self) -> list[str]:
         try:
