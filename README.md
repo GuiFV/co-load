@@ -83,6 +83,56 @@ resident (scale-to-zero), and proxies the response, streaming included.
 uv run coload status    # what's resident, VRAM map, budget
 ```
 
+## Everyday CLI
+
+```bash
+coload models                      # list configured models + what's resident
+coload up gemma4:12b               # spin a model up now (warm it)
+coload chat gemma4:12b explain WSL in one line
+coload down gemma4:12b             # unload it, freeing VRAM
+coload status                      # VRAM map, budget, residency
+```
+
+All client commands take `--url`, or set `COLOAD_URL` once (useful from WSL
+or another machine).
+
+## Start at boot (Windows)
+
+```bat
+scripts\windows\install-autostart.cmd
+```
+
+Drops a launcher into your Startup folder that starts the gateway hidden at
+every logon (no admin rights needed) and starts it immediately. Logs go to
+`%LOCALAPPDATA%\coload\coload.log`. Remove with
+`scripts\windows\uninstall-autostart.cmd`.
+
+## Using from WSL
+
+Install the CLI inside WSL from the mounted repo:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install /mnt/c/path/to/co-load
+```
+
+Then point it at the Windows gateway. With default WSL networking (NAT) the
+Windows host is the default gateway, so add to `~/.bashrc`:
+
+```bash
+export COLOAD_URL="http://$(ip route show default | awk '{print $3}'):8800"
+```
+
+Two networking notes:
+
+- The gateway must bind `0.0.0.0` for NAT-mode WSL to reach it (the shipped
+  config does). That also exposes it on your LAN without auth; if you don't
+  want that, set `host: "127.0.0.1"` and enable WSL mirrored networking
+  (`networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`, then
+  `wsl --shutdown`), after which `http://127.0.0.1:8800` works from WSL too.
+- If Windows Defender Firewall prompts on first start, allow access on
+  private networks.
+
 ## Configuration
 
 The defaults in [`config.yaml`](config.yaml) run as-is. What to change, and why:
@@ -125,6 +175,8 @@ The defaults in [`config.yaml`](config.yaml) run as-is. What to change, and why:
 - `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`:
   OpenAI-compatible passthrough, admission-controlled.
 - `GET /v1/models`: models configured across all engines.
+- `POST /models/load`, `POST /models/unload` (body `{"model": "..."}`): warm a
+  model up or evict it explicitly; what `coload up` / `coload down` call.
 - `GET /status`: VRAM map, budget, what's resident per engine.
 - Full card returns a clear `503` naming what's resident and how much you need
   to free.

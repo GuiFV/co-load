@@ -166,6 +166,21 @@ class Orchestrator:
         )
         raise error
 
+    async def unload_model(self, model: str) -> bool:
+        """Explicitly evict ``model`` (CLI/API request, not TTL).
+
+        Returns True if it was resident and got unloaded. KeyError if the
+        model isn't configured.
+        """
+        backend = self._backends[self._config.engine_for_model(model)]
+        async with self._load_mutex:
+            was_resident = await backend.is_ready(model)
+            if was_resident:
+                logger.info("explicit unload of '%s' from %s", model, backend.name)
+                await backend.unload(model)
+        self._last_used.pop(model, None)
+        return was_resident
+
     # ------------------------------------------------------------------ #
     # Idle TTL
     # ------------------------------------------------------------------ #

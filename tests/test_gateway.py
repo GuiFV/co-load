@@ -34,6 +34,12 @@ class FakeOrchestrator:
     async def status(self):
         return {"vram": {"total_gb": 24.0}, "engines": {}}
 
+    async def unload_model(self, model: str) -> bool:
+        self.calls.append(f"unload:{model}")
+        if model == "unknown-model":
+            raise KeyError(model)
+        return model == "small"
+
 
 class BackendSim:
     def __init__(self):
@@ -130,6 +136,40 @@ class TestEmbeddings:
         )
         assert resp.status_code == 200
         assert str(backend_sim.requests[0].url).endswith("/v1/embeddings")
+
+
+class TestModelLifecycleEndpoints:
+    """CLI-facing endpoints: warm a model up, or evict it, explicitly."""
+
+    async def test_load_endpoint_warms_model(self, client, orch):
+        resp = await client.post("/models/load", json={"model": "small"})
+        assert resp.status_code == 200
+        assert resp.json() == {"model": "small", "status": "loaded"}
+        assert orch.calls == ["small"]
+
+    async def test_load_endpoint_maps_vram_full_to_503(self, client):
+        resp = await client.post("/models/load", json={"model": "too-big"})
+        assert resp.status_code == 503
+        assert "Evict" in resp.json()["error"]["message"]
+
+    async def test_load_endpoint_unknown_model_404(self, client):
+        resp = await client.post("/models/load", json={"model": "unknown-model"})
+        assert resp.status_code == 404
+
+    async def test_unload_endpoint(self, client, orch):
+        resp = await client.post("/models/unload", json={"model": "small"})
+        assert resp.status_code == 200
+        assert resp.json() == {"model": "small", "status": "unloaded"}
+        assert orch.calls == ["unload:small"]
+
+    async def test_unload_endpoint_not_resident(self, client):
+        resp = await client.post("/models/unload", json={"model": "other"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "not-resident"
+
+    async def test_unload_endpoint_missing_model_400(self, client):
+        resp = await client.post("/models/unload", json={})
+        assert resp.status_code == 400
 
 
 class TestIntrospection:

@@ -314,6 +314,26 @@ class TestAutoEvictIdle:
         assert len(alerter.alerts) == 1
 
 
+class TestExplicitUnload:
+    async def test_unload_model_frees_and_forgets(self, parts):
+        orch, _, backends, _, _, clock = parts
+        await orch.ensure_ready("small")
+        assert await orch.unload_model("small") is True
+        assert backends["oll"].unloads == ["small"]
+        clock.advance(10_000)
+        assert await orch.stop_idle() == []  # no longer tracked
+
+    async def test_unload_model_not_resident_returns_false(self, parts):
+        orch, _, backends, *_ = parts
+        assert await orch.unload_model("small") is False
+        assert backends["oll"].unloads == []
+
+    async def test_unload_unknown_model_raises_key_error(self, parts):
+        orch, *_ = parts
+        with pytest.raises(KeyError):
+            await orch.unload_model("nope")
+
+
 class TestStatus:
     async def test_status_reports_vram_and_residents(self, parts):
         orch, _, backends, *_ = parts

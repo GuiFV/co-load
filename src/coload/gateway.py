@@ -35,6 +35,7 @@ class OrchestratorPort(Protocol):
 
     async def ensure_ready(self, model: str) -> str: ...
     async def status(self) -> dict: ...
+    async def unload_model(self, model: str) -> bool: ...
 
 
 def create_app(
@@ -97,6 +98,44 @@ def create_app(
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
         return await _admit_and_proxy(request)
+
+    async def _model_from_body(request: Request) -> str | JSONResponse:
+        try:
+            body = await request.json()
+        except ValueError:
+            return _error(400, "request body must be JSON")
+        model = body.get("model")
+        if not model:
+            return _error(400, "missing 'model' field")
+        return model
+
+    @app.post("/models/load")
+    async def load_model(request: Request):
+        model = await _model_from_body(request)
+        if isinstance(model, JSONResponse):
+            return model
+        try:
+            await orchestrator.ensure_ready(model)
+        except KeyError:
+            return _error(404, f"model '{model}' is not configured in coload")
+        except NotEnoughVram as exc:
+            return _error(503, str(exc), resident=exc.resident)
+        except BackendError as exc:
+            return _error(502, f"backend failed to start '{model}': {exc}")
+        return {"model": model, "status": "loaded"}
+
+    @app.post("/models/unload")
+    async def unload_model(request: Request):
+        model = await _model_from_body(request)
+        if isinstance(model, JSONResponse):
+            return model
+        try:
+            was_resident = await orchestrator.unload_model(model)
+        except KeyError:
+            return _error(404, f"model '{model}' is not configured in coload")
+        except BackendError as exc:
+            return _error(502, f"backend failed to unload '{model}': {exc}")
+        return {"model": model, "status": "unloaded" if was_resident else "not-resident"}
 
     @app.get("/v1/models")
     async def list_models():
