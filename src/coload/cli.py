@@ -124,7 +124,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     serve = sub.add_parser("serve", help="run the gateway + orchestrator")
-    serve.add_argument("-c", "--config", default="config.yaml", help="path to config.yaml")
+    serve.add_argument(
+        "-c",
+        "--config",
+        default=None,
+        help="config file (default: config.local.yaml if present, else config.yaml)",
+    )
     serve.add_argument("--host", default=None, help="override config host")
     serve.add_argument("--port", type=int, default=None, help="override config port")
 
@@ -175,13 +180,15 @@ def main(argv: list[str] | None = None) -> int:
 def _serve(args: argparse.Namespace) -> int:  # pragma: no cover - runs a server
     import uvicorn
 
-    from .config import load_config
+    from .config import load_config, resolve_config_path
     from .runtime import build_runtime
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
     )
-    config = load_config(args.config)
+    config_path = resolve_config_path(args.config)
+    logging.getLogger("coload").info("using config: %s", config_path)
+    config = load_config(config_path)
     runtime = build_runtime(config)
     uvicorn.run(
         runtime.app,

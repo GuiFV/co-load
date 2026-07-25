@@ -1,5 +1,9 @@
 # coload default configuration. `coload serve` reads this file as-is.
 # The README's "What to change and why" section walks through every knob.
+#
+# Machine-specific setups: copy this to config.local.yaml (gitignored) and
+# edit there; `coload serve` prefers it automatically. Keeps personal model
+# lists and network choices out of the public repo.
 
 gpu: 0                      # NVML index of the GPU to arbitrate
 
@@ -17,7 +21,10 @@ watchdog_interval_s: 10     # how often the watchdog polls total VRAM
 # alternate between models too big to co-reside on the card.
 auto_evict_idle: false
 
-host: "127.0.0.1"           # gateway bind address
+# Safe default: only this machine can reach the gateway. If you need WSL
+# (NAT mode) or other machines to reach it, set "0.0.0.0" in your
+# config.local.yaml and mind that this exposes the gateway without auth.
+host: "127.0.0.1"
 port: 8800                  # gateway port
 
 # Learned VRAM estimates are cached here after real loads refine the seeds.

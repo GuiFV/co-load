@@ -107,3 +107,20 @@ def load_config(path: str | Path) -> Config:
     """Load and validate a YAML config file."""
     text = Path(path).read_text(encoding="utf-8")
     return Config.model_validate(yaml.safe_load(text) or {})
+
+
+def resolve_config_path(explicit: str | None = None, cwd: Path | None = None) -> Path:
+    """Pick the config file for ``coload serve``.
+
+    Machine-specific setups live in ``config.local.yaml`` (gitignored) and
+    take precedence over the tracked ``config.yaml`` defaults, so personal
+    changes never leak into the public repo. An explicit ``--config`` always
+    wins.
+    """
+    if explicit:
+        return Path(explicit)
+    base = cwd or Path.cwd()
+    local = base / "config.local.yaml"
+    if local.exists():
+        return local
+    return base / "config.yaml"

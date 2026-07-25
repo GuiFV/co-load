@@ -125,17 +125,23 @@ export COLOAD_URL="http://$(ip route show default | awk '{print $3}'):8800"
 
 Two networking notes:
 
-- The gateway must bind `0.0.0.0` for NAT-mode WSL to reach it (the shipped
-  config does). That also exposes it on your LAN without auth; if you don't
-  want that, set `host: "127.0.0.1"` and enable WSL mirrored networking
-  (`networkingMode=mirrored` in `%USERPROFILE%\.wslconfig`, then
-  `wsl --shutdown`), after which `http://127.0.0.1:8800` works from WSL too.
+- The gateway must bind `0.0.0.0` for NAT-mode WSL to reach it: set
+  `host: "0.0.0.0"` in your `config.local.yaml`. That also exposes it on
+  your LAN without auth; if you don't want that, keep the `127.0.0.1`
+  default and enable WSL mirrored networking (`networkingMode=mirrored` in
+  `%USERPROFILE%\.wslconfig`, then `wsl --shutdown`), after which
+  `http://127.0.0.1:8800` works from WSL too.
 - If Windows Defender Firewall prompts on first start, allow access on
   private networks.
 
 ## Configuration
 
-The defaults in [`config.yaml`](config.yaml) run as-is. What to change, and why:
+The defaults in [`config.yaml`](config.yaml) run as-is. For your own setup,
+copy it to `config.local.yaml` and edit there: it is gitignored and
+`coload serve` prefers it automatically, so personal model lists and network
+choices stay out of version control.
+
+What to change, and why:
 
 - **`engines.*.models`**: the routing table and the fit check's seed, so it
   must match reality. List the Ollama models you've actually pulled and the

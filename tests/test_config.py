@@ -186,6 +186,31 @@ class TestEngineValidation:
             load_config(tmp_path / "missing.yaml")
 
 
+class TestConfigPathResolution:
+    """config.local.yaml (gitignored, machine-specific) beats the tracked
+    config.yaml, so personal setups never need to touch public defaults."""
+
+    def test_local_override_wins_when_present(self, tmp_path):
+        (tmp_path / "config.yaml").write_text("a: 1", encoding="utf-8")
+        (tmp_path / "config.local.yaml").write_text("a: 2", encoding="utf-8")
+        from coload.config import resolve_config_path
+
+        assert resolve_config_path(None, cwd=tmp_path).name == "config.local.yaml"
+
+    def test_tracked_default_without_local(self, tmp_path):
+        (tmp_path / "config.yaml").write_text("a: 1", encoding="utf-8")
+        from coload.config import resolve_config_path
+
+        assert resolve_config_path(None, cwd=tmp_path).name == "config.yaml"
+
+    def test_explicit_path_always_wins(self, tmp_path):
+        (tmp_path / "config.local.yaml").write_text("a: 2", encoding="utf-8")
+        (tmp_path / "mine.yaml").write_text("a: 3", encoding="utf-8")
+        from coload.config import resolve_config_path
+
+        assert resolve_config_path("mine.yaml", cwd=tmp_path).name == "mine.yaml"
+
+
 class TestShippedDefaults:
     def test_repo_config_yaml_is_valid(self):
         """The out-of-the-box promise: the shipped config.yaml always parses."""
