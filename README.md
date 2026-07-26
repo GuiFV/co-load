@@ -139,7 +139,9 @@ Two networking notes:
 The defaults in [`config.yaml`](config.yaml) run as-is. For your own setup,
 copy it to `config.local.yaml` and edit there: it is gitignored and
 `coload serve` prefers it automatically, so personal model lists and network
-choices stay out of version control.
+choices stay out of version control. Secrets (only the Hugging Face token so
+far) follow the same pattern: copy [`.env.example`](.env.example) to `.env`
+(gitignored), which docker compose reads automatically.
 
 What to change, and why:
 
