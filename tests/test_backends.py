@@ -74,13 +74,47 @@ class TestOllamaBackend:
     async def test_not_ready_when_model_absent(self, ollama):
         assert not await ollama.is_ready("gemma:12b")
 
-    async def test_load_requests_indefinite_keep_alive(self, ollama, ollama_sim):
+    async def test_load_pins_for_a_finite_ttl(self, ollama, ollama_sim):
+        """Never keep_alive: -1.
+
+        Coload owns residency and evicts explicitly, so the pin only has to
+        outlive its own idle sweep. Pinning indefinitely made the daemon the
+        sole owner of the model's fate: both eviction paths iterate the
+        in-memory `_last_used` map, so a model pinned by a previous coload
+        process was invisible to them and stayed resident until Ollama itself
+        restarted, holding VRAM no one could reclaim. A finite TTL is the
+        dead-man's switch for exactly that.
+        """
         await ollama.load("gemma:12b", budget_bytes=10 * GIB, total_bytes=24 * GIB)
         gen = [r for r in ollama_sim.requests if r.url.path == "/api/generate"]
         body = json.loads(gen[0].content)
         assert body["model"] == "gemma:12b"
-        assert body["keep_alive"] == -1
+        assert body["keep_alive"] == 3600
+        assert body["keep_alive"] > 0
         assert await ollama.is_ready("gemma:12b")
+
+    async def test_pin_ttl_zero_sends_the_wire_value_for_indefinite(self, ollama_sim):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(ollama_sim.handler),
+            base_url="http://localhost:11434",
+        )
+        backend = OllamaBackend(
+            "ollama", base_url="http://localhost:11434", client=client, pin_ttl_s=0
+        )
+        await backend.load("gemma:12b", budget_bytes=GIB, total_bytes=24 * GIB)
+        assert json.loads(ollama_sim.requests[-1].content)["keep_alive"] == -1
+
+    async def test_pin_ttl_is_configurable(self, ollama_sim):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(ollama_sim.handler),
+            base_url="http://localhost:11434",
+        )
+        backend = OllamaBackend(
+            "ollama", base_url="http://localhost:11434", client=client, pin_ttl_s=120
+        )
+        await backend.load("gemma:12b", budget_bytes=GIB, total_bytes=24 * GIB)
+        body = json.loads(ollama_sim.requests[-1].content)
+        assert body["keep_alive"] == 120
 
     async def test_unload_sends_zero_keep_alive(self, ollama, ollama_sim):
         await ollama.load("gemma:12b", budget_bytes=10 * GIB, total_bytes=24 * GIB)
@@ -107,7 +141,7 @@ class TestOllamaBackend:
         await ollama.load("nomic-embed-text", budget_bytes=GIB, total_bytes=24 * GIB)
         emb = [r for r in ollama_sim.requests if r.url.path == "/api/embed"]
         body = json.loads(emb[0].content)
-        assert body["keep_alive"] == -1
+        assert body["keep_alive"] == 3600
         assert await ollama.is_ready("nomic-embed-text")
 
     async def test_unload_embedding_model_falls_back_to_embed_api(self, ollama, ollama_sim):

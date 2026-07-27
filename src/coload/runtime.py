@@ -69,6 +69,9 @@ def _attach_background_tasks(
 ) -> None:  # pragma: no cover - exercised only under a live server
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Before anything else: reconcile with what is already on the card, so
+        # a restart does not orphan the models this process loaded last time.
+        await orchestrator.adopt_resident()
         tasks = [
             asyncio.create_task(watchdog.run(config.watchdog_interval_s)),
             asyncio.create_task(orchestrator.run_ttl_loop()),

@@ -40,6 +40,13 @@ engines:
   ollama:
     kind: ollama
     base_url: "http://localhost:11434"
+    # How long Ollama itself keeps a loaded model pinned. A backstop, not a
+    # policy: coload evicts at idle_ttl_seconds, long before this fires. It
+    # only matters when coload is not around to evict — a crash or restart
+    # loses the in-memory table its eviction paths iterate, and a model
+    # pinned indefinitely then holds VRAM nothing can reclaim short of
+    # restarting the daemon. Must exceed idle_ttl_seconds.
+    pin_ttl_seconds: 3600
     models:
       "llama3.2": { est_vram_gb: 3 }
       "nomic-embed-text": { est_vram_gb: 1 }

@@ -123,6 +123,37 @@ class Orchestrator:
             self._touch(model)
             return backend.proxy_url(model)
 
+    async def adopt_resident(self) -> list[str]:
+        """Take ownership of configured models already resident at startup.
+
+        `_last_used` lives in memory, and both eviction paths iterate it. A
+        coload that restarts while a model is loaded therefore forgets it
+        entirely: the idle sweep skips it, auto-evict cannot offer it up to
+        make room, and it holds VRAM until the engine itself is restarted.
+        Since coload is what loaded it, reconciling at boot is simply
+        remembering.
+
+        Only models this config knows about are adopted. Anything else on the
+        card belongs to somebody else, and the policy there is to alert, never
+        to evict. An engine that is down at boot is skipped rather than fatal:
+        the gateway has to come up so it can summon models later.
+        """
+        adopted: list[str] = []
+        for name, backend in self._backends.items():
+            try:
+                resident = await backend.resident_models()
+            except Exception as exc:  # noqa: BLE001 - a dead engine is not fatal
+                logger.warning("adopt: engine '%s' unreachable at startup: %s", name, exc)
+                continue
+            for model in resident:
+                if self._config.engines[name].models.get(model) is None:
+                    continue  # out-of-band; not ours to manage
+                self._touch(model)
+                adopted.append(model)
+        if adopted:
+            logger.info("adopted %d model(s) already resident: %s", len(adopted), adopted)
+        return adopted
+
     async def _evict_idle_to_fit(self, model: str, needed: int) -> int:
         """Evict coload-loaded models (LRU first) until ``model`` fits.
 

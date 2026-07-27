@@ -12,7 +12,9 @@ from .vllm import VllmBackend
 
 def _build_ollama(name: str, cfg: EngineConfig) -> Backend:
     assert cfg.base_url is not None
-    return OllamaBackend(name, base_url=cfg.base_url)
+    return OllamaBackend(
+        name, base_url=cfg.base_url, pin_ttl_s=cfg.pin_ttl_seconds
+    )
 
 
 def _build_vllm(name: str, cfg: EngineConfig) -> Backend:

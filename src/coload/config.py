@@ -34,6 +34,17 @@ class EngineConfig(BaseModel):
     start: str | None = None
     stop: str | None = None  # optional; needed when `start` detaches (docker compose)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
+    # Ollama only: how long a loaded model stays pinned in the daemon.
+    #
+    # A backstop, not a policy. Coload evicts explicitly and long before this
+    # fires, so in normal operation it never does; it covers the case where
+    # coload is not running at all to do the evicting. Must exceed
+    # idle_ttl_seconds, so coload's own sweep is never racing the daemon's.
+    #
+    # 0 pins indefinitely, which is the only honest reading of an
+    # idle_ttl_seconds of 0 ("never evict for idleness"). It is safe because
+    # adopt_resident() reclaims orphans at startup either way.
+    pin_ttl_seconds: float = Field(default=3600, ge=0)
 
     @model_validator(mode="after")
     def _check_kind_requirements(self) -> "EngineConfig":
@@ -78,6 +89,28 @@ class Config(BaseModel):
     estimates_path: Path = Path(".coload/learned_estimates.json")
     alert: AlertConfig = Field(default_factory=AlertConfig)
     engines: dict[str, EngineConfig]
+
+    @model_validator(mode="after")
+    def _pin_outlives_the_idle_sweep(self) -> "Config":
+        """coload must be the one that evicts; the daemon is only the backstop.
+
+        With a pin shorter than the idle TTL, Ollama drops the model out from
+        under a coload that still believes it is resident, and the next
+        request pays a reload it never accounted for.
+        """
+        for name, engine in self.engines.items():
+            if engine.kind != "ollama":
+                continue
+            if engine.pin_ttl_seconds == 0:  # indefinite, by request
+                continue
+            if engine.pin_ttl_seconds <= self.idle_ttl_seconds:
+                raise ValueError(
+                    f"engine '{name}': pin_ttl_seconds "
+                    f"({engine.pin_ttl_seconds}) must exceed idle_ttl_seconds "
+                    f"({self.idle_ttl_seconds}), so coload evicts before the "
+                    f"daemon does"
+                )
+        return self
 
     @model_validator(mode="after")
     def _no_duplicate_models(self) -> "Config":

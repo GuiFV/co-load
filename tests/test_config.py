@@ -211,6 +211,60 @@ class TestConfigPathResolution:
         assert resolve_config_path("mine.yaml", cwd=tmp_path).name == "mine.yaml"
 
 
+class TestPinTtl:
+    """The pin is a backstop for a coload that is not running; it must not
+    become the thing that does the evicting."""
+
+    def _cfg(self, **engine):
+        return {
+            "idle_ttl_seconds": 900,
+            "engines": {
+                "ollama": {
+                    "kind": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "models": {"m": {"est_vram_gb": 1}},
+                    **engine,
+                }
+            },
+        }
+
+    def test_defaults_to_a_finite_pin(self):
+        cfg = Config.model_validate(self._cfg())
+        assert cfg.engines["ollama"].pin_ttl_seconds == 3600
+
+    def test_pin_shorter_than_the_idle_sweep_is_rejected(self):
+        """Otherwise Ollama drops the model while coload still believes it is
+        resident, and the next request silently pays a reload."""
+        with pytest.raises(ValidationError, match="must exceed idle_ttl_seconds"):
+            Config.model_validate(self._cfg(pin_ttl_seconds=300))
+
+    def test_zero_opts_back_into_an_indefinite_pin(self):
+        """Escape hatch for someone who has disabled the idle sweep and means
+        it. Safe now only because adoption reclaims orphans on restart."""
+        cfg = Config.model_validate(self._cfg(pin_ttl_seconds=0))
+        assert cfg.engines["ollama"].pin_ttl_seconds == 0
+
+    def test_a_negative_pin_is_rejected(self):
+        """-1 is Ollama's wire value for forever, not a user-facing setting."""
+        with pytest.raises(ValidationError):
+            Config.model_validate(self._cfg(pin_ttl_seconds=-1))
+
+    def test_vllm_engines_are_exempt(self):
+        """keep_alive is an Ollama mechanism; vLLM lifecycle is a process."""
+        cfg = Config.model_validate({
+            "idle_ttl_seconds": 900,
+            "engines": {
+                "vllm": {
+                    "kind": "vllm",
+                    "base_url": "http://localhost:8000",
+                    "start": "docker compose up -d vllm",
+                    "models": {"m": {"est_vram_gb": 1}},
+                }
+            },
+        })
+        assert "vllm" in cfg.engines
+
+
 class TestShippedDefaults:
     def test_repo_config_yaml_is_valid(self):
         """The out-of-the-box promise: the shipped config.yaml always parses."""

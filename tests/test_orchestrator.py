@@ -342,3 +342,64 @@ class TestStatus:
         assert status["vram"]["total_gb"] == 24.0
         assert status["buffer_pct"] == 0.10
         assert status["engines"]["oll"]["resident"] == ["small"]
+
+
+class TestAdoptResident:
+    """Coload must never lose track of a model it is responsible for.
+
+    Both eviction paths iterate `_last_used`, which is in-memory. Restart the
+    daemon with a model resident and that model became invisible: not idle-
+    swept, not evictable to make room, holding VRAM until the engine itself
+    was restarted. Adoption reconciles the table with what is actually loaded.
+    """
+
+    async def test_a_resident_model_is_adopted_and_becomes_idle_evictable(self, parts):
+        orch, _probe, backends, _est, _alerter, clock = parts
+        backends["oll"].ready.add("small")          # resident from a past process
+
+        await orch.adopt_resident()
+
+        assert "small" in (await orch.status())["last_used"]
+        clock.advance(901)
+        assert await orch.stop_idle() == ["small"]
+        assert backends["oll"].unloads == ["small"]
+
+    async def test_an_adopted_model_can_be_evicted_to_make_room(self, parts):
+        orch, probe, backends, _est, _alerter, _clock = parts
+        backends["oll"].ready.add("small")
+        orch._config = make_config(auto_evict_idle=True)
+        await orch.adopt_resident()
+        # A 24 GiB card with 20 GiB held by the orphan, freed by the unload:
+        # "big" fits only if the orphan can be offered up, which needs it to
+        # have been adopted first.
+        probe._queue[:] = [
+            VramSnapshot(total=24 * GIB, used=20 * GIB),   # ensure_ready
+            VramSnapshot(total=24 * GIB, used=20 * GIB),   # evict loop, before
+            VramSnapshot(total=24 * GIB, used=1 * GIB),    # evict loop, after
+            VramSnapshot(total=24 * GIB, used=1 * GIB),    # ensure_ready re-read
+        ]
+
+        await orch.ensure_ready("big")
+
+        assert backends["oll"].unloads == ["small"]
+
+    async def test_unconfigured_models_are_never_adopted(self, parts):
+        """Out-of-band GPU users stay off limits: coload alerts, never evicts."""
+        orch, _probe, backends, *_ = parts
+        backends["oll"].ready.add("somebody-elses-model")
+
+        await orch.adopt_resident()
+
+        assert (await orch.status())["last_used"] == {}
+
+    async def test_adoption_survives_an_unreachable_engine(self, parts):
+        """A dead engine at boot must not stop the gateway from starting."""
+        orch, _probe, backends, *_ = parts
+
+        async def boom():
+            raise BackendError("engine down")
+
+        backends["vl"].resident_models = boom
+        backends["oll"].ready.add("tiny")
+
+        assert await orch.adopt_resident() == ["tiny"]
