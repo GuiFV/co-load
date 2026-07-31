@@ -214,6 +214,45 @@ def make_vllm(sim: HealthSim, launcher=None, **over):
 
 
 class TestVllmBackend:
+    async def test_detached_starter_exiting_is_not_engine_death(self):
+        """`docker compose up -d` returns as soon as the container exists,
+        long before vLLM has read its weights. Treating that as the engine
+        dying failed every detached start whose model was not healthy inside
+        the first poll, which is every large model."""
+        launcher = FakeLauncher()
+        sim = HealthSim(fail_first=3)
+        backend = make_vllm(
+            sim, launcher,
+            start_template="docker compose up -d vllm",
+            stop_template="docker compose stop vllm",
+        )
+        launcher_launch = launcher.launch
+
+        def launch_then_exit(command, env=None):
+            proc = launcher_launch(command, env)
+            proc.terminate()          # the starter returns immediately
+            return proc
+
+        launcher.launch = launch_then_exit
+        await backend.load("big-model", budget_bytes=8, total_bytes=10)
+        assert await backend.resident_models() == ["big-model"]
+
+    async def test_owned_process_exiting_still_fails_fast(self):
+        """With no stop command coload owns the process, so its exit is the
+        engine dying and must not be waited out to the full timeout."""
+        launcher = FakeLauncher()
+        backend = make_vllm(HealthSim(fail_first=99), launcher, stop_template=None)
+        launcher_launch = launcher.launch
+
+        def launch_then_exit(command, env=None):
+            proc = launcher_launch(command, env)
+            proc.terminate()
+            return proc
+
+        launcher.launch = launch_then_exit
+        with pytest.raises(BackendError, match="exited during startup"):
+            await backend.load("m", budget_bytes=8, total_bytes=10)
+
     async def test_load_launches_with_budget_fraction(self):
         launcher = FakeLauncher()
         backend = make_vllm(HealthSim(), launcher)
@@ -342,6 +381,34 @@ class TestRegistry:
         )
         backend = build_backend("v", cfg)
         assert isinstance(backend, VllmBackend)
+
+    def test_vllm_health_timeout_wired_through(self):
+        """A big checkpoint is slower to serve than the 180s default allows:
+        weights, KV cache profiling and CUDA graph capture all precede the
+        first health response. Measured at ~270s for a 21.7 GiB w4a16 model,
+        which the default failed, tore down, and reported as a timeout."""
+        cfg = EngineConfig.model_validate(
+            {
+                "kind": "vllm",
+                "base_url": "http://x:8000",
+                "start": "docker compose up -d vllm",
+                "health_timeout_seconds": 900,
+                "models": {},
+            }
+        )
+        backend = build_backend("v", cfg)
+        assert backend._health_timeout_s == 900
+
+    def test_vllm_health_timeout_defaults_when_unset(self):
+        cfg = EngineConfig.model_validate(
+            {
+                "kind": "vllm",
+                "base_url": "http://x:8000",
+                "start": "vllm serve {model}",
+                "models": {},
+            }
+        )
+        assert build_backend("v", cfg)._health_timeout_s == 180
 
     def test_vllm_stop_command_wired_through(self):
         cfg = EngineConfig.model_validate(

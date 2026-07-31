@@ -139,8 +139,9 @@ Two networking notes:
 The defaults in [`config.yaml`](config.yaml) run as-is. For your own setup,
 copy it to `config.local.yaml` and edit there: it is gitignored and
 `coload serve` prefers it automatically, so personal model lists and network
-choices stay out of version control. Secrets (only the Hugging Face token so
-far) follow the same pattern: copy [`.env.example`](.env.example) to `.env`
+choices stay out of version control. Anything the bundled docker-compose
+service reads (the Hugging Face token, the vLLM host port, extra vLLM flags)
+follows the same pattern: copy [`.env.example`](.env.example) to `.env`
 (gitignored), which docker compose reads automatically.
 
 What to change, and why:
@@ -148,9 +149,22 @@ What to change, and why:
 - **`engines.*.models`**: the routing table and the fit check's seed, so it
   must match reality. List the Ollama models you've actually pulled and the
   HF model ids you want vLLM to serve. A model not listed here gets a `404`.
-- **`est_vram_gb`** per model: a rough figure is fine (model card size plus a
-  little for KV cache). It only seeds the first fit decision; after the first
-  real load coload measures actual usage and remembers it.
+- **`est_vram_gb`** per model: for Ollama a rough figure is fine (model card
+  size plus a little for KV cache). It only seeds the first fit decision;
+  after the first real load coload measures actual usage and remembers it.
+  **For vLLM it is not a guess.** vLLM claims a slice of the card at startup
+  and holds it for the process lifetime, so coload hands it this number as
+  its `--gpu-memory-utilization` and never refines it from observation:
+  measuring an engine that sizes itself to its budget would only report your
+  own decision back to you, and each load would ratchet the figure upward by
+  the CUDA context overhead it does not count. Size it deliberately, to
+  weights plus the KV cache you want; too small starves batching.
+- **`engines.<vllm>.health_timeout_seconds`** (default `180`): how long a
+  started engine has to answer `/health`. Big checkpoints need longer than
+  they look, because weights, KV cache profiling and CUDA graph capture all
+  precede the first response; a 20 GiB quantised model can take several
+  minutes. Too low and coload tears the engine down mid-start and reports a
+  timeout, which reads like a broken engine rather than an impatient one.
 - **`buffer_pct`** (default `0.10`): raise it (`0.15`-`0.25`) on a desktop
   where browsers/games also use the GPU; lower it toward `0.05` on a headless
   box to squeeze in bigger models.
@@ -176,7 +190,20 @@ What to change, and why:
 | `alert.channels` | `[log]` | `log` and/or `webhook` (needs `alert.webhook_url`) |
 | `engines.<name>.kind` | (required) | `ollama` or `vllm` |
 | `engines.<name>.start` / `stop` | (vllm) | Command templates. `stop` is optional; set it when `start` detaches (e.g. `docker compose up -d` / `docker compose stop`) |
-| `engines.<name>.models.<model>.est_vram_gb` | (required) | Seeds the fit check; refined from observed usage after the first real load |
+| `engines.<name>.health_timeout_seconds` | `180` | (vllm) How long a started engine has to answer `/health` before coload gives up and tears it down |
+| `engines.<name>.models.<model>.est_vram_gb` | (required) | Seeds the fit check. Ollama: refined from observed usage after the first real load. vLLM: used as-is and never refined, because it becomes the engine's actual allocation |
+
+### Environment (bundled compose service)
+
+Copy [`.env.example`](.env.example) to `.env`. All optional; the compose
+defaults stand in.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HUGGING_FACE_HUB_TOKEN` | (unset) | Needed only for gated or private HF models |
+| `COLOAD_VLLM_PORT` | `8000` | Host port for the vLLM container. Must agree with `engines.vllm.base_url`, or coload health-checks a dead port |
+| `VLLM_WSL2_ENABLE_PIN_MEMORY` | (unset) | Set to `1` under Docker Desktop on Windows, where WSL2 disables pinned memory and vLLM's v1 GPU worker dies with "UVA is not available". Verify with `torch.zeros(n, pin_memory=True)` on the GPU inside the image first |
+| `COLOAD_VLLM_EXTRA_ARGS` | (unset) | Extra vLLM flags. Appended last, and vLLM keeps the last value of a repeated flag, so `--gpu-memory-utilization` here overrides coload's computed budget |
 
 ## API surface
 

@@ -116,10 +116,15 @@ class Orchestrator:
                 "loading '%s' via %s (needs ~%s GiB, budget %s GiB)",
                 model, backend.name, _gb(needed), _gb(budget),
             )
-            await backend.load(model, budget, before.total)
+            # Hand over what the model needs, not everything that happens to
+            # be free. An engine that sizes itself to its budget would swallow
+            # the whole card for a model that needs two thirds of it, and the
+            # rest of the box would then be refused for want of a gigabyte.
+            await backend.load(model, min(needed, budget), before.total)
 
             after = self._probe.read()
-            self._estimates.observe(model, after.used - before.used)
+            if not backend.sizes_to_budget:
+                self._estimates.observe(model, after.used - before.used)
             self._touch(model)
             return backend.proxy_url(model)
 

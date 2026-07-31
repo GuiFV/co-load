@@ -20,7 +20,11 @@ def _build_ollama(name: str, cfg: EngineConfig) -> Backend:
 def _build_vllm(name: str, cfg: EngineConfig) -> Backend:
     assert cfg.base_url is not None and cfg.start is not None
     return VllmBackend(
-        name, base_url=cfg.base_url, start_template=cfg.start, stop_template=cfg.stop
+        name,
+        base_url=cfg.base_url,
+        start_template=cfg.start,
+        stop_template=cfg.stop,
+        health_timeout_s=cfg.health_timeout_seconds,
     )
 
 

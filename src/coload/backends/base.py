@@ -17,6 +17,18 @@ class BackendError(RuntimeError):
 class Backend(ABC):
     """One managed inference engine."""
 
+    #: Whether this engine's footprint is decided by what it is handed rather
+    #: than by the model.
+    #:
+    #: Ollama loads a model and uses what the weights need, so measuring it
+    #: teaches us something. vLLM claims a slice of the card at startup and
+    #: holds it for the process lifetime, so measuring it only tells us what
+    #: we allowed it to take. Feeding that back as a learned estimate is a
+    #: ratchet: each load is handed the last measurement, exceeds it by the
+    #: CUDA context overhead it does not count, and teaches a bigger number
+    #: until the model no longer fits the card it was running on an hour ago.
+    sizes_to_budget: bool = False
+
     def __init__(self, name: str):
         self.name = name
 

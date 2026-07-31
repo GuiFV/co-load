@@ -56,10 +56,24 @@ engines:
   # measured right before the load) and compose interpolates them.
   vllm:
     kind: vllm
+    # Must match the host port the compose service publishes. Setting
+    # COLOAD_VLLM_PORT in .env without changing this leaves coload polling a
+    # port nothing listens on, which surfaces as a health-check timeout.
     base_url: "http://localhost:8000"
+    # How long to wait for a started engine to answer /health. The default
+    # suits a small model. A large one is slower than it looks: weights have
+    # to be read, the KV cache profiled and CUDA graphs captured before the
+    # first request is served, and a 20 GiB quantised checkpoint can take
+    # several minutes. Too low tears the engine down and reports a timeout,
+    # which reads like a broken engine rather than an impatient one.
+    health_timeout_seconds: 180
     start: "docker compose up -d vllm"
     stop: "docker compose stop vllm"
     models:
+      # Unlike Ollama, vLLM takes the slice it is handed and holds it, so
+      # this figure is a real allocation rather than a first guess: coload
+      # never refines it from observation. Size it to weights plus the KV
+      # cache you want, because too small starves batching.
       "Qwen/Qwen2.5-0.5B-Instruct": { est_vram_gb: 2 }
 
   # Bare-metal alternative (vllm installed on the host, no docker):

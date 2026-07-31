@@ -13,14 +13,35 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     ports:
-      - "8000:8000"
+      # Host port is a variable because 8000 is not reliably free; plenty of
+      # local services claim it. The bind failure is worth knowing by sight,
+      # because it does not look like a port problem: the container is killed
+      # about four seconds in, exit 137, with no logs at all, which reads
+      # exactly like an out-of-memory kill during weight loading.
+      #
+      # Change this and engines.vllm.base_url has to change with it, or coload
+      # health-checks a port nothing is listening on and times out the start.
+      - "${COLOAD_VLLM_PORT:-8000}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      # Docker Desktop runs every container inside WSL2, where vLLM disables
+      # pinned memory by default. Its v1 GPU worker then fails outright with
+      # "UVA is not available", because UVA requires pinning. The default is
+      # conservative rather than a hard limit: vLLM gates on WSL2 kernel
+      # >= 4.19.121 and lets this flag re-enable it. Verify before setting it,
+      # with torch.zeros(n, pin_memory=True) inside this image on the GPU.
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=${VLLM_WSL2_ENABLE_PIN_MEMORY:-}
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
+    # COLOAD_VLLM_EXTRA_ARGS lands last, and vLLM's parser keeps the last
+    # value it sees for a repeated flag. Passing --gpu-memory-utilization
+    # there therefore overrides the budget coload just computed: a deliberate
+    # escape hatch for pinning a fixed slice, and a way to defeat the
+    # arbitration entirely if you did not mean to.
     command: >
       --model ${COLOAD_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
       --gpu-memory-utilization ${COLOAD_BUDGET_FRAC:-0.70}
+      ${COLOAD_VLLM_EXTRA_ARGS:-}
     deploy:
       resources:
         reservations:

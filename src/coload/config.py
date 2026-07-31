@@ -45,6 +45,15 @@ class EngineConfig(BaseModel):
     # idle_ttl_seconds of 0 ("never evict for idleness"). It is safe because
     # adopt_resident() reclaims orphans at startup either way.
     pin_ttl_seconds: float = Field(default=3600, ge=0)
+    # vLLM only: how long to wait for a started engine to answer /health.
+    #
+    # The default suits a small model. A large one is slower than it looks:
+    # weights have to be read, the KV cache profiled and CUDA graphs captured
+    # before the first request is served. Measured on a 5090, a 21.7 GiB
+    # w4a16 checkpoint took ~270s cold, so the 180s default failed it, tore
+    # the process down, and reported a health-check timeout, which reads like
+    # a broken engine rather than an impatient one.
+    health_timeout_seconds: float = Field(default=180, gt=0)
 
     @model_validator(mode="after")
     def _check_kind_requirements(self) -> "EngineConfig":

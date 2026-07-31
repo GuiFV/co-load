@@ -50,6 +50,10 @@ class SubprocessLauncher:  # pragma: no cover - exercised only in integration
 
 
 class VllmBackend(Backend):
+    # gpu_memory_utilization is a claim on the card, not a measurement of the
+    # model: whatever it is handed, it takes and keeps.
+    sizes_to_budget = True
+
     def __init__(
         self,
         name: str,
@@ -74,8 +78,23 @@ class VllmBackend(Backend):
         self._process: ProcessHandle | None = None
         self._model: str | None = None
 
+    def _owns_process(self) -> bool:
+        """Whether the handle we hold is the engine, or just its starter.
+
+        A stop command is the declaration that something else owns the engine:
+        `docker compose up -d` hands off to the daemon, `systemctl start` to
+        systemd. In those cases the handle we kept belongs to a starter that
+        exits immediately, so its liveness says nothing about the engine and
+        health is the only evidence there is.
+        """
+        return self._stop_template is None
+
     async def is_ready(self, model: str) -> bool:
-        if self._model != model or self._process is None or not self._process.is_running():
+        if self._model != model:
+            return False
+        if self._owns_process() and (
+            self._process is None or not self._process.is_running()
+        ):
             return False
         return await self._healthy()
 
@@ -101,9 +120,15 @@ class VllmBackend(Backend):
         await self._teardown()
 
     async def resident_models(self) -> list[str]:
-        if self._model is not None and self._process is not None and self._process.is_running():
-            return [self._model]
-        return []
+        if self._model is None:
+            return []
+        if self._owns_process():
+            running = self._process is not None and self._process.is_running()
+            return [self._model] if running else []
+        # Detached: ask the engine, because the starter is long gone. Getting
+        # this wrong makes coload believe a resident model is absent, so it
+        # loads it again and its VRAM accounting drifts from the card.
+        return [self._model] if await self._healthy() else []
 
     def proxy_url(self, model: str) -> str:
         return self._base_url
@@ -130,9 +155,20 @@ class VllmBackend(Backend):
             return False
 
     async def _wait_healthy(self) -> None:
+        # A detached starter exits the moment it has handed the engine off:
+        # `docker compose up -d` returns as soon as the container is created,
+        # long before vLLM has read its weights. That exit is success, not
+        # death, so only a start we own says anything about the engine by
+        # ending. Having a stop command is exactly what "someone else owns the
+        # process" means here, which is why _teardown runs it.
+        #
+        # Without this, every detached start failed with "exited during
+        # startup" unless the model happened to be healthy inside the first
+        # poll, which no large model is.
+        owns_process = self._owns_process()
         deadline = asyncio.get_running_loop().time() + self._health_timeout_s
         while asyncio.get_running_loop().time() < deadline:
-            if self._process is not None and not self._process.is_running():
+            if owns_process and self._process is not None and not self._process.is_running():
                 raise BackendError(f"vllm process for '{self._model}' exited during startup")
             if await self._healthy():
                 return

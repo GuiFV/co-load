@@ -68,23 +68,82 @@ class TestFitAndLoad:
         orch, probe, backends, *_ = parts
         url = await orch.ensure_ready("small")
         assert url == backends["oll"].url
-        # budget = free(20G) - 10% of total(2.4G)
+        # The model needs 8G and the budget is far larger (free 20G less the
+        # 10% buffer), so it is handed what it needs. Handing over the whole
+        # budget is how an engine that sizes itself to it swallows the card.
         model, budget, total = backends["oll"].loads[0]
         assert model == "small"
-        assert budget == 20 * GIB - int(24 * GIB * 0.10)
+        assert budget == 8 * GIB
         assert total == 24 * GIB
+
+    async def test_headroom_is_left_for_everything_else(self, tmp_path, clock, alerter):
+        """The point of handing over the estimate rather than the budget: a
+        model needing a third of the card leaves the other two thirds for the
+        next one, instead of an engine sizing itself to whatever was free."""
+        config = make_config(buffer_pct=0.10)
+        probe = FakeProbe(VramSnapshot(total=24 * GIB, used=4 * GIB))
+        backends = {"oll": FakeBackend("oll"), "vl": FakeBackend("vl")}
+        estimates = EstimateStore(tmp_path / "l.json", seeds={"tiny": 1 * GIB})
+        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+
+        await orch.ensure_ready("tiny")
+        _, budget, total = backends["oll"].loads[0]
+        assert budget == 1 * GIB
+        assert total - budget > 20 * GIB, "the rest of the card stays available"
 
     async def test_budget_uses_user_configured_buffer_pct(self, tmp_path, clock, alerter):
         """The user-settable buffer percentage flows into the fit check."""
         config = make_config(buffer_pct=0.25)
         probe = FakeProbe(VramSnapshot(total=24 * GIB, used=4 * GIB))
         backends = {"oll": FakeBackend("oll"), "vl": FakeBackend("vl")}
+        # Fits the 17.6G budget at the default 10% buffer, not the 14G at 25%,
+        # so the setting is what decides whether this load is allowed.
+        estimates = EstimateStore(tmp_path / "l.json", seeds={"small": 16 * GIB})
+        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+
+        with pytest.raises(NotEnoughVram):
+            await orch.ensure_ready("small")
+
+    async def test_an_elastic_engine_does_not_teach_its_own_budget(
+        self, tmp_path, clock, alerter
+    ):
+        """vLLM keeps whatever slice it is handed, so measuring it afterwards
+        reports our own decision back to us. Learning that is a ratchet: the
+        next load is handed the measurement, exceeds it by the CUDA context it
+        never counted, and teaches a bigger number again, until a model that
+        ran an hour ago no longer fits the card."""
+        config = make_config()
+        # 4G used before, 28G after: the engine took its slice plus the CUDA
+        # context overhead it does not count against its own utilisation.
+        probe = FakeProbe(
+            VramSnapshot(total=32 * GIB, used=4 * GIB),
+            VramSnapshot(total=32 * GIB, used=28 * GIB),
+        )
+        elastic = FakeBackend("vl", url="http://fake:8000")
+        elastic.sizes_to_budget = True
+        backends = {"oll": FakeBackend("oll"), "vl": elastic}
+        estimates = EstimateStore(tmp_path / "l.json", seeds={"big": 20 * GIB})
+        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+
+        await orch.ensure_ready("big")
+        assert estimates.estimate("big") == 20 * GIB, "learned its own allowance"
+
+    async def test_a_fixed_engine_still_learns_what_it_measured(
+        self, tmp_path, clock, alerter
+    ):
+        """Ollama uses what the weights need, so the measurement is real and
+        worth keeping: that is how a seeded guess becomes a fact."""
+        config = make_config()
+        probe = FakeProbe(
+            VramSnapshot(total=24 * GIB, used=4 * GIB),
+            VramSnapshot(total=24 * GIB, used=13 * GIB),
+        )
+        backends = {"oll": FakeBackend("oll"), "vl": FakeBackend("vl")}
         estimates = EstimateStore(tmp_path / "l.json", seeds={"small": 8 * GIB})
         orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
 
         await orch.ensure_ready("small")
-        _, budget, _ = backends["oll"].loads[0]
-        assert budget == 20 * GIB - int(24 * GIB * 0.25)
+        assert estimates.estimate("small") == 9 * GIB
 
     async def test_fast_path_skips_probe_when_ready(self, parts):
         orch, probe, backends, *_ = parts
