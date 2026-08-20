@@ -85,6 +85,14 @@ class Config(BaseModel):
 
     gpu: int = 0
     buffer_pct: float = Field(default=0.10, ge=0.0, lt=1.0)
+    # Opt-in: lock a fixed slice of the card for coload's models. When set,
+    # the admission budget never falls below this figure minus what coload's
+    # own configured models are estimated to hold, however much out-of-band
+    # processes (a game, an editor, a browser) have taken. The OS makes the
+    # guarantee physical: when the engine allocates, resident desktop memory
+    # is paged out to system RAM, so out-of-band users lose performance,
+    # never correctness. None (the default) keeps the purely measured budget.
+    reserve_gb: float | None = Field(default=None, gt=0)
     idle_ttl_seconds: float = Field(default=900, ge=0)
     # Opt-in: when a requested model doesn't fit, evict models COLOAD ITSELF
     # loaded (least-recently-used first) to make room, before refusing. Never
@@ -133,6 +141,10 @@ class Config(BaseModel):
                     )
                 seen[model] = engine_name
         return self
+
+    @property
+    def reserve_bytes(self) -> int | None:
+        return None if self.reserve_gb is None else int(self.reserve_gb * GIB)
 
     def engine_for_model(self, model: str) -> str:
         """Name of the engine serving ``model``; raises KeyError if unknown."""

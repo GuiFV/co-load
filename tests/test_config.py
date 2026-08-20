@@ -275,3 +275,37 @@ class TestShippedDefaults:
         assert cfg.buffer_pct == 0.10
         assert "ollama" in cfg.engines
         assert cfg.engines["vllm"].stop is not None  # compose needs a stop command
+
+
+class TestReserveSetting:
+    """reserve_gb locks a fixed slice of the card for coload; off by default."""
+
+    def _minimal(self, **over):
+        base = {
+            "engines": {
+                "ollama": {
+                    "kind": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "models": {"m": {"est_vram_gb": 8}},
+                }
+            },
+        }
+        base.update(over)
+        return Config.model_validate(base)
+
+    def test_defaults_to_off(self):
+        config = self._minimal()
+        assert config.reserve_gb is None
+        assert config.reserve_bytes is None
+
+    def test_accepts_a_positive_slice(self):
+        from coload.config import GIB
+
+        config = self._minimal(reserve_gb=27.5)
+        assert config.reserve_gb == 27.5
+        assert config.reserve_bytes == int(27.5 * GIB)
+
+    def test_rejects_zero_and_negative(self):
+        for bad in (0, -3):
+            with pytest.raises(ValidationError):
+                self._minimal(reserve_gb=bad)

@@ -168,6 +168,19 @@ What to change, and why:
 - **`buffer_pct`** (default `0.10`): raise it (`0.15`-`0.25`) on a desktop
   where browsers/games also use the GPU; lower it toward `0.05` on a headless
   box to squeeze in bigger models.
+- **`reserve_gb`** (default off): lock a fixed slice of the card for coload.
+  The measured budget shrinks with every byte another process takes, so a
+  game or an editor left open can starve a model that ran fine an hour
+  earlier. With a reserve set, the admission budget never falls below
+  `reserve_gb` minus what coload's own configured models already hold,
+  whatever the desktop is doing; the OS pages desktop memory out to system
+  RAM when the engine actually allocates, so out-of-band users lose
+  performance, never correctness. Size it to your biggest model plus
+  whatever must co-reside with it (say, an embedder), and accept that the
+  desktop keeps only the remainder of the card while a model is resident.
+  This inverts the priority `buffer_pct` expresses: raise the buffer to
+  protect the desktop from coload, set a reserve to protect coload from the
+  desktop.
 - **`idle_ttl_seconds`** (default `900`): lower frees VRAM sooner but means
   more cold starts; `0` disables idle-stop entirely.
 - **`engines.vllm.start` / `stop`**: the default drives the bundled
@@ -182,6 +195,7 @@ What to change, and why:
 | --- | --- | --- |
 | `gpu` | `0` | NVML index of the GPU to arbitrate |
 | `buffer_pct` | `0.10` | **User-settable.** Share of total VRAM always kept free as headroom. `[0, 1)` |
+| `reserve_gb` | off | Opt-in: floor the admission budget at this many GiB minus what coload's own resident models hold, however much out-of-band processes have taken. Locks a slice of the card for coload; the desktop gets the rest |
 | `idle_ttl_seconds` | `900` | Stop a backend after this long idle (`0` disables) |
 | `auto_evict_idle` | `false` | Opt-in: when a request doesn't fit, evict models **coload itself loaded** (LRU first) to make room before refusing. Out-of-band GPU users are still never evicted, only alerted about. For workloads that alternate between models too big to co-reside |
 | `watchdog_interval_s` | `10` | Watchdog poll interval |

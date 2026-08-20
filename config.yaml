@@ -12,6 +12,15 @@ gpu: 0                      # NVML index of the GPU to arbitrate
 # defaults to 0.10 (10%). Must be >= 0 and < 1.
 buffer_pct: 0.10
 
+# Opt-in: lock a fixed slice of the card for coload's models. When set, the
+# admission budget never falls below this figure minus what coload's own
+# resident models are estimated to hold, however much out-of-band processes
+# (a game, an editor, a browser) have taken; the OS pages desktop memory out
+# when the engine actually allocates. Use it when other GPU work on the box
+# must never starve the models; leave it off to keep the purely measured
+# budget, where the buffer above protects the desktop instead.
+# reserve_gb: 21
+
 idle_ttl_seconds: 900       # stop a backend after this long idle (0 disables)
 watchdog_interval_s: 10     # how often the watchdog polls total VRAM
 

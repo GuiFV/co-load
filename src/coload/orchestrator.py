@@ -103,7 +103,7 @@ class Orchestrator:
                 return backend.proxy_url(model)
 
             before = self._probe.read()  # invariant 1: measured inside the mutex
-            budget = before.budget(self._config.buffer_pct)
+            budget = await self._apply_reserve(before.budget(self._config.buffer_pct))
             needed = self._estimates.estimate(model)
 
             if needed > budget and self._config.auto_evict_idle:
@@ -127,6 +127,32 @@ class Orchestrator:
                 self._estimates.observe(model, after.used - before.used)
             self._touch(model)
             return backend.proxy_url(model)
+
+    async def _apply_reserve(self, budget: int) -> int:
+        """Floor the budget at the configured reserve (``reserve_gb``).
+
+        The measured budget shrinks with every byte an out-of-band process
+        takes, so a game or an editor left open can starve a model that ran
+        fine an hour earlier. The reserve partitions the card instead: while
+        the slice itself has room, counting only what coload's own configured
+        models already occupy, admission proceeds and the OS pages the
+        desktop out when the engine actually allocates. Unconfigured
+        residents are the desktop's side of the partition and never shrink
+        the slice.
+        """
+        reserve = self._config.reserve_bytes
+        if reserve is None:
+            return budget
+        held = 0
+        for name, backend in self._backends.items():
+            try:
+                resident = await backend.resident_models()
+            except Exception:  # noqa: BLE001 - a dead engine holds nothing
+                continue
+            for model in resident:
+                if self._config.engines[name].models.get(model) is not None:
+                    held += self._estimates.estimate(model)
+        return max(budget, reserve - held)
 
     async def adopt_resident(self) -> list[str]:
         """Take ownership of configured models already resident at startup.
@@ -169,7 +195,9 @@ class Orchestrator:
         candidates = sorted(
             (ts, m) for m, ts in self._last_used.items() if m != model
         )
-        budget = self._probe.read().budget(self._config.buffer_pct)
+        budget = await self._apply_reserve(
+            self._probe.read().budget(self._config.buffer_pct)
+        )
         for _, victim in candidates:
             if needed <= budget:
                 break
@@ -185,7 +213,9 @@ class Orchestrator:
             self._last_used.pop(victim, None)
             if EVICT_SETTLE_S:  # let the driver's free figure catch up
                 await asyncio.sleep(EVICT_SETTLE_S)
-            budget = self._probe.read().budget(self._config.buffer_pct)
+            budget = await self._apply_reserve(
+                self._probe.read().budget(self._config.buffer_pct)
+            )
         return budget
 
     async def _refuse(self, model: str, needed: int, budget: int, free: int) -> None:
@@ -254,14 +284,16 @@ class Orchestrator:
 
     async def status(self) -> dict:
         snap = self._probe.read()
+        budget = await self._apply_reserve(snap.budget(self._config.buffer_pct))
         return {
             "vram": {
                 "total_gb": _gb(snap.total),
                 "used_gb": _gb(snap.used),
                 "free_gb": _gb(snap.free),
-                "budget_gb": _gb(snap.budget(self._config.buffer_pct)),
+                "budget_gb": _gb(budget),
             },
             "buffer_pct": self._config.buffer_pct,
+            "reserve_gb": self._config.reserve_gb,
             "engines": {
                 name: {"resident": await backend.resident_models()}
                 for name, backend in self._backends.items()

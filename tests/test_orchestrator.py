@@ -462,3 +462,93 @@ class TestAdoptResident:
         backends["oll"].ready.add("tiny")
 
         assert await orch.adopt_resident() == ["tiny"]
+
+
+class TestReserveFloor:
+    """Opt-in reserve_gb: a fixed slice of the card is coload's, whatever the
+    desktop is holding.
+
+    The measured budget shrinks with every byte an out-of-band process takes,
+    so a game or an editor left open can starve a model that ran fine an hour
+    earlier. The reserve is a floor under that: admission proceeds while the
+    slice itself has room, counting only what coload's own configured models
+    already occupy. Out-of-band residents are the desktop's side of the
+    partition and never shrink the slice.
+    """
+
+    def _parts(self, tmp_path, clock, alerter, probe, reserve_gb):
+        config = make_config(reserve_gb=reserve_gb)
+        backends = {
+            "oll": FakeBackend("oll"),
+            "vl": FakeBackend("vl", url="http://fake:8000"),
+        }
+        estimates = EstimateStore(
+            tmp_path / "learned.json",
+            seeds={"small": 8 * GIB, "tiny": 1 * GIB, "big": 20 * GIB},
+        )
+        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+        return orch, backends
+
+    async def test_desktop_bloat_cannot_starve_the_slice(
+        self, tmp_path, clock, alerter
+    ):
+        """12G held out-of-band leaves a measured budget of 16.8G, which
+        refuses the 20G model; a 21G reserve with nothing of ours resident
+        floors the budget at 21G and the load proceeds."""
+        probe = FakeProbe(VramSnapshot(total=32 * GIB, used=12 * GIB))
+        orch, backends = self._parts(tmp_path, clock, alerter, probe, reserve_gb=21)
+
+        await orch.ensure_ready("big")
+
+        model, budget, _total = backends["vl"].loads[0]
+        assert model == "big"
+        assert budget == 20 * GIB  # handed its estimate, not the whole floor
+
+    async def test_the_floor_discounts_what_our_residents_hold(
+        self, tmp_path, clock, alerter
+    ):
+        """The slice is not bottomless: models coload itself loaded spend it.
+        With 8G of ours resident, a 21G reserve floors the budget at 13G and
+        the 20G model is still refused."""
+        probe = FakeProbe(
+            VramSnapshot(total=32 * GIB, used=2 * GIB),   # small: pre-load
+            VramSnapshot(total=32 * GIB, used=10 * GIB),  # small: post-load
+            VramSnapshot(total=32 * GIB, used=30 * GIB),  # big: measured ~0 free
+        )
+        orch, _ = self._parts(tmp_path, clock, alerter, probe, reserve_gb=21)
+
+        await orch.ensure_ready("small")
+        with pytest.raises(NotEnoughVram) as exc_info:
+            await orch.ensure_ready("big")
+
+        assert exc_info.value.budget_bytes == 13 * GIB
+
+    async def test_out_of_band_residents_never_shrink_the_slice(
+        self, tmp_path, clock, alerter
+    ):
+        """A model coload does not manage is the desktop's problem, exactly
+        like a game: it gets paged, not budgeted."""
+        probe = FakeProbe(VramSnapshot(total=32 * GIB, used=30 * GIB))
+        orch, backends = self._parts(tmp_path, clock, alerter, probe, reserve_gb=21)
+        backends["oll"].ready.add("somebody-elses-model")
+
+        await orch.ensure_ready("big")
+
+        assert [m for m, *_ in backends["vl"].loads] == ["big"]
+
+    async def test_status_reports_the_reserve_and_the_floored_budget(
+        self, tmp_path, clock, alerter
+    ):
+        probe = FakeProbe(VramSnapshot(total=32 * GIB, used=30 * GIB))
+        orch, _ = self._parts(tmp_path, clock, alerter, probe, reserve_gb=21)
+
+        status = await orch.status()
+
+        assert status["reserve_gb"] == 21
+        assert status["vram"]["budget_gb"] == 21.0
+
+    async def test_off_by_default_keeps_the_measured_budget(self, parts):
+        orch, *_ = parts
+        status = await orch.status()
+        assert status["reserve_gb"] is None
+        assert status["vram"]["budget_gb"] == 17.6  # 20 free - 2.4 buffer
