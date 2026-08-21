@@ -309,7 +309,11 @@ class EngineSim:
 class DownSim:
     """No engine behind the port at all."""
 
+    def __init__(self):
+        self.calls = 0
+
     def handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
         raise httpx.ConnectError("connection refused", request=request)
 
 
@@ -337,6 +341,16 @@ class TestVllmRediscovery:
         backend = make_vllm(DownSim(), **self._DETACHED)
         assert await backend.resident_models() == []
         assert not await backend.is_ready("big-model")
+
+    async def test_rediscovery_is_attempted_once_not_per_call(self):
+        """Boot-time reconciliation, not a poll: a down engine must not cost
+        a connection attempt on every status read or admission pass."""
+        sim = DownSim()
+        backend = make_vllm(sim, **self._DETACHED)
+        await backend.resident_models()
+        await backend.resident_models()
+        assert not await backend.is_ready("big-model")
+        assert sim.calls == 1
 
     async def test_an_owned_process_is_never_rediscovered(self):
         """With no stop command coload owns the process, and a fresh backend

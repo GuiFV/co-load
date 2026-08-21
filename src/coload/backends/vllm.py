@@ -77,6 +77,7 @@ class VllmBackend(Backend):
         self._stop_timeout_s = stop_timeout_s
         self._process: ProcessHandle | None = None
         self._model: str | None = None
+        self._rediscovered = False
 
     def _owns_process(self) -> bool:
         """Whether the handle we hold is the engine, or just its starter.
@@ -146,9 +147,15 @@ class VllmBackend(Backend):
         none, so whatever answers the port belongs to somebody else and is
         left alone. Never raises; an engine that is down simply stays
         unknown.
+
+        One attempt, ever: this is boot-time reconciliation, the counterpart
+        of the orchestrator's adopt_resident. Retrying on every status poll
+        or admission pass would pay a connection attempt against a port with
+        nothing behind it for as long as the engine stays down.
         """
-        if self._owns_process():
+        if self._rediscovered or self._owns_process():
             return
+        self._rediscovered = True
         try:
             resp = await self._client.get(f"{self._base_url}/v1/models")
             if resp.status_code != 200:
