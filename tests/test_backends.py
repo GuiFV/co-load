@@ -288,6 +288,69 @@ class TestVllmBackend:
         assert launcher.processes[0].terminated
         assert not await backend.is_ready("m")
 
+
+class EngineSim:
+    """A running detached engine: /health answers, /v1/models says what it serves."""
+
+    def __init__(self, model="big-model"):
+        self.model = model
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": self.model, "object": "model"}]},
+            )
+        return httpx.Response(404)
+
+
+class DownSim:
+    """No engine behind the port at all."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+
+class TestVllmRediscovery:
+    """The served model lives in gateway memory, so a restart forgets it while
+    a detached engine keeps running. The engine itself is the only witness
+    left; a fresh backend asks it rather than believing the card is empty.
+    Getting this wrong loads the model again over its own resident copy and
+    the accounting drifts from the card."""
+
+    _DETACHED = dict(
+        start_template="docker compose up -d vllm",
+        stop_template="docker compose stop vllm",
+    )
+
+    async def test_a_fresh_backend_rediscovers_a_detached_engine(self):
+        backend = make_vllm(EngineSim("big-model"), **self._DETACHED)
+        assert await backend.resident_models() == ["big-model"]
+
+    async def test_rediscovery_makes_is_ready_true(self):
+        backend = make_vllm(EngineSim("big-model"), **self._DETACHED)
+        assert await backend.is_ready("big-model")
+
+    async def test_no_engine_means_no_residents_and_no_error(self):
+        backend = make_vllm(DownSim(), **self._DETACHED)
+        assert await backend.resident_models() == []
+        assert not await backend.is_ready("big-model")
+
+    async def test_an_owned_process_is_never_rediscovered(self):
+        """With no stop command coload owns the process, and a fresh backend
+        owns none: whatever answers the port belongs to somebody else."""
+        backend = make_vllm(EngineSim("big-model"), stop_template=None)
+        assert await backend.resident_models() == []
+
+    async def test_a_rediscovered_model_is_stopped_before_a_different_load(self):
+        launcher = FakeLauncher()
+        backend = make_vllm(EngineSim("old-model"), launcher, **self._DETACHED)
+        await backend.load("new-model", budget_bytes=GIB, total_bytes=2 * GIB)
+        assert launcher.commands[0] == "docker compose stop vllm"
+        assert launcher.commands[-1] == "docker compose up -d vllm"
+
     async def test_resident_models(self):
         backend = make_vllm(HealthSim())
         assert await backend.resident_models() == []

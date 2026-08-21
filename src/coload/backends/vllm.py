@@ -90,6 +90,8 @@ class VllmBackend(Backend):
         return self._stop_template is None
 
     async def is_ready(self, model: str) -> bool:
+        if self._model is None:
+            await self._rediscover()
         if self._model != model:
             return False
         if self._owns_process() and (
@@ -99,6 +101,8 @@ class VllmBackend(Backend):
         return await self._healthy()
 
     async def load(self, model: str, budget_bytes: int, total_bytes: int) -> None:
+        if self._model is None:
+            await self._rediscover()
         if self._model is not None:
             await self.unload(self._model)
 
@@ -121,6 +125,8 @@ class VllmBackend(Backend):
 
     async def resident_models(self) -> list[str]:
         if self._model is None:
+            await self._rediscover()
+        if self._model is None:
             return []
         if self._owns_process():
             running = self._process is not None and self._process.is_running()
@@ -129,6 +135,29 @@ class VllmBackend(Backend):
         # this wrong makes coload believe a resident model is absent, so it
         # loads it again and its VRAM accounting drifts from the card.
         return [self._model] if await self._healthy() else []
+
+    async def _rediscover(self) -> None:
+        """Re-learn what a detached engine is serving.
+
+        The served model lives in this process, so a restart forgets it while
+        the engine keeps running. For a detached engine the engine itself is
+        the only witness left: ask its /v1/models rather than believe the
+        card is empty. An owned process is different: a fresh backend owns
+        none, so whatever answers the port belongs to somebody else and is
+        left alone. Never raises; an engine that is down simply stays
+        unknown.
+        """
+        if self._owns_process():
+            return
+        try:
+            resp = await self._client.get(f"{self._base_url}/v1/models")
+            if resp.status_code != 200:
+                return
+            served = resp.json().get("data") or []
+        except (httpx.HTTPError, ValueError):
+            return
+        if served:
+            self._model = served[0].get("id")
 
     def proxy_url(self, model: str) -> str:
         return self._base_url
