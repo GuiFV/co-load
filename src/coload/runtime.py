@@ -19,6 +19,7 @@ from .config import Config
 from .estimates import EstimateStore
 from .gateway import create_app
 from .orchestrator import Orchestrator
+from .room import CudaRoomMaker
 from .vram import VramProbe, default_probe
 from .watchdog import Watchdog
 
@@ -49,6 +50,7 @@ def build_runtime(config: Config, probe: VramProbe | None = None) -> Runtime:
         backends=backends,
         estimates=estimates,
         alerter=alerter,
+        room_maker=CudaRoomMaker(),
     )
     watchdog = Watchdog(probe=probe, alerter=alerter, buffer_pct=config.buffer_pct)
     app = create_app(config=config, orchestrator=orchestrator)

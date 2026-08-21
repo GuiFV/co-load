@@ -175,14 +175,26 @@ What to change, and why:
   game or an editor left open can starve a model that ran fine an hour
   earlier. With a reserve set, the admission budget never falls below
   `reserve_gb` minus what coload's own configured models already hold,
-  whatever the desktop is doing; the OS pages desktop memory out to system
-  RAM when the engine actually allocates, so out-of-band users lose
-  performance, never correctness. Size it to your biggest model plus
+  whatever the desktop is doing. Size it to your biggest model plus
   whatever must co-reside with it (say, an embedder), and accept that the
   desktop keeps only the remainder of the card while a model is resident.
   This inverts the priority `buffer_pct` expresses: raise the buffer to
   protect the desktop from coload, set a reserve to protect coload from the
-  desktop.
+  desktop. Admission is only a promise, though: the card may still be
+  physically occupied when the engine starts, which is what `make_room`
+  is for.
+- **`make_room`** (default off): what physically clears the card when an
+  admitted model does not fit the live measurement. The OS can page another
+  process's VRAM out to system RAM, but only allocation pressure triggers
+  it, and some engines never apply that pressure: vLLM sizes its KV cache
+  from a measurement before allocating anything, sees the occupied card,
+  and refuses its own start. With `make_room` on, coload claims the bytes
+  the model needs and releases them just before the engine starts, so the
+  demotion happens up front and the engine measures a clean card. Only the
+  OS's own paging is involved: out-of-band processes lose performance,
+  never correctness, and nothing is evicted. Off, a physical shortfall is
+  refused cleanly (503 plus an alert) instead of starting an engine that is
+  bound to fail. Pairs naturally with `reserve_gb`.
 - **`idle_ttl_seconds`** (default `900`): lower frees VRAM sooner but means
   more cold starts; `0` disables idle-stop entirely.
 - **`log.path`** (default `.coload/coload.log`): the gateway's own record of
@@ -203,6 +215,7 @@ What to change, and why:
 | `gpu` | `0` | NVML index of the GPU to arbitrate |
 | `buffer_pct` | `0.10` | **User-settable.** Share of total VRAM always kept free as headroom. `[0, 1)` |
 | `reserve_gb` | off | Opt-in: floor the admission budget at this many GiB minus what coload's own resident models hold, however much out-of-band processes have taken. Locks a slice of the card for coload; the desktop gets the rest |
+| `make_room` | `false` | Opt-in: when an admitted model does not physically fit the live measurement, claim and release its bytes so the OS pages out-of-band memory to system RAM before the engine starts. Off, a physical shortfall is refused cleanly with an alert |
 | `idle_ttl_seconds` | `900` | Stop a backend after this long idle (`0` disables) |
 | `auto_evict_idle` | `false` | Opt-in: when a request doesn't fit, evict models **coload itself loaded** (LRU first) to make room before refusing. Out-of-band GPU users are still never evicted, only alerted about. For workloads that alternate between models too big to co-reside |
 | `watchdog_interval_s` | `10` | Watchdog poll interval |

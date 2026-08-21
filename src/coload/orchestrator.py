@@ -26,7 +26,8 @@ from .alerts import Alert, Alerter
 from .backends.base import Backend
 from .config import Config
 from .estimates import EstimateStore
-from .vram import GIB, VramProbe
+from .room import RoomMaker
+from .vram import GIB, VramProbe, VramSnapshot
 
 logger = logging.getLogger("coload.orchestrator")
 
@@ -55,11 +56,22 @@ class NotEnoughVram(RuntimeError):
         self.budget_bytes = budget_bytes
         self.free_bytes = free_bytes
         self.resident = resident
-        super().__init__(
-            f"'{model}' needs ~{_gb(needed_bytes)} GiB, but only "
-            f"{_gb(budget_bytes)} GiB of budget is available "
-            f"({_gb(free_bytes)} GiB free). Evict something and retry."
-        )
+        if needed_bytes <= budget_bytes:
+            # Admitted by the budget (a reserve floor), physically short: the
+            # card is occupied by out-of-band work the slice is entitled to.
+            message = (
+                f"'{model}' needs ~{_gb(needed_bytes)} GiB, but only "
+                f"{_gb(free_bytes)} GiB is physically free "
+                f"(budget {_gb(budget_bytes)} GiB). Free some VRAM, or set "
+                f"make_room to page out-of-band memory out, and retry."
+            )
+        else:
+            message = (
+                f"'{model}' needs ~{_gb(needed_bytes)} GiB, but only "
+                f"{_gb(budget_bytes)} GiB of budget is available "
+                f"({_gb(free_bytes)} GiB free). Evict something and retry."
+            )
+        super().__init__(message)
 
 
 class Orchestrator:
@@ -71,6 +83,7 @@ class Orchestrator:
         estimates: EstimateStore,
         alerter: Alerter,
         clock: Callable[[], float] = time.monotonic,
+        room_maker: RoomMaker | None = None,
     ):
         self._config = config
         self._probe = probe
@@ -78,6 +91,7 @@ class Orchestrator:
         self._estimates = estimates
         self._alerter = alerter
         self._clock = clock
+        self._room_maker = room_maker
         self._load_mutex = asyncio.Lock()
         self._last_used: dict[str, float] = {}
 
@@ -110,6 +124,16 @@ class Orchestrator:
                 budget = await self._evict_idle_to_fit(model, needed)
                 before = self._probe.read()  # re-measure for observe() below
             if needed > budget:
+                await self._refuse(model, needed, budget, before.free)
+
+            # The budget can admit a model the card cannot physically hold
+            # right now (a reserve floor with out-of-band work sitting on the
+            # slice). The measurement decides: make room if configured, and
+            # otherwise refuse cleanly rather than hand the engine a start it
+            # is bound to fail.
+            if needed > before.free:
+                before = await self._make_room(model, needed, before)
+            if needed > before.free:
                 await self._refuse(model, needed, budget, before.free)
 
             logger.info(
@@ -153,6 +177,39 @@ class Orchestrator:
                 if self._config.engines[name].models.get(model) is not None:
                     held += self._estimates.estimate(model)
         return max(budget, reserve - held)
+
+    async def _make_room(
+        self, model: str, needed: int, before: VramSnapshot
+    ) -> VramSnapshot:
+        """Force the OS to page out-of-band VRAM out so ``model`` fits.
+
+        Claims the model's bytes and releases them just before the engine
+        starts, so the driver demotes other processes' memory to system RAM
+        up front instead of leaving the engine to measure an occupied card
+        and refuse its own start. Opt-in (``make_room``) and never fatal: on
+        any failure the measurement is simply re-read and the caller decides,
+        which lands on the same clean refusal as having no room maker at all.
+        """
+        if not (self._config.make_room and self._room_maker is not None):
+            return before
+        logger.info(
+            "make_room: '%s' needs ~%s GiB but only %s GiB is free; "
+            "claiming to force paging",
+            model, _gb(needed), _gb(before.free),
+        )
+        try:
+            claimed = await asyncio.to_thread(
+                self._room_maker.make_room, needed, self._config.gpu
+            )
+        except Exception:  # noqa: BLE001 - a failed claim must not kill the load path
+            logger.exception("make_room: claim failed for '%s'", model)
+            return before
+        after = self._probe.read()
+        logger.info(
+            "make_room: claimed %s GiB, %s GiB now free",
+            _gb(claimed), _gb(after.free),
+        )
+        return after
 
     async def adopt_resident(self) -> list[str]:
         """Take ownership of configured models already resident at startup.
@@ -294,6 +351,7 @@ class Orchestrator:
             },
             "buffer_pct": self._config.buffer_pct,
             "reserve_gb": self._config.reserve_gb,
+            "make_room": self._config.make_room,
             "engines": {
                 name: {"resident": await backend.resident_models()}
                 for name, backend in self._backends.items()

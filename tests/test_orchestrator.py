@@ -158,6 +158,136 @@ class TestFitAndLoad:
             await orch.ensure_ready("nope")
 
 
+class FakeRoomMaker:
+    def __init__(self, fail: bool = False):
+        self.calls: list[tuple[int, int]] = []
+        self.fail = fail
+
+    def make_room(self, target_bytes: int, gpu_index: int = 0) -> int:
+        if self.fail:
+            raise RuntimeError("driver unavailable")
+        self.calls.append((target_bytes, gpu_index))
+        return target_bytes
+
+
+class TestMakeRoom:
+    """A budget can admit a model the card cannot physically hold right now:
+    with a reserve set, out-of-band processes may be sitting on bytes the
+    slice is entitled to. The measurement decides first; make_room (opt-in)
+    forces the OS to page that memory out; without it the load is refused
+    cleanly, with an alert, instead of handing the engine a doomed start."""
+
+    def _build(self, tmp_path, clock, alerter, *snapshots, maker=None, **config_over):
+        config = make_config(reserve_gb=21, **config_over)
+        probe = FakeProbe(*snapshots)
+        backends = {"oll": FakeBackend("oll"), "vl": FakeBackend("vl")}
+        estimates = EstimateStore(tmp_path / "l.json", seeds={"big": 20 * GIB})
+        orch = Orchestrator(
+            config, probe, backends, estimates, alerter, clock, room_maker=maker
+        )
+        return orch, backends
+
+    async def test_without_make_room_a_physical_shortfall_refuses(
+        self, tmp_path, clock, alerter
+    ):
+        # budget: floored at the 21G reserve, so 'big' (20G) is admitted;
+        # physically only 14G is free, so the engine would die on its own
+        # startup arithmetic. Refusing is the graceful version of that.
+        orch, backends = self._build(
+            tmp_path, clock, alerter, VramSnapshot(total=24 * GIB, used=10 * GIB)
+        )
+        with pytest.raises(NotEnoughVram):
+            await orch.ensure_ready("big")
+        assert backends["vl"].loads == []
+
+    async def test_the_refusal_alerts_and_names_the_way_out(
+        self, tmp_path, clock, alerter
+    ):
+        orch, _ = self._build(
+            tmp_path, clock, alerter, VramSnapshot(total=24 * GIB, used=10 * GIB)
+        )
+        with pytest.raises(NotEnoughVram, match="physically free"):
+            await orch.ensure_ready("big")
+        assert len(alerter.alerts) == 1
+        assert "make_room" in alerter.alerts[0].message
+
+    async def test_make_room_claims_and_the_load_proceeds(
+        self, tmp_path, clock, alerter
+    ):
+        maker = FakeRoomMaker()
+        orch, backends = self._build(
+            tmp_path,
+            clock,
+            alerter,
+            VramSnapshot(total=24 * GIB, used=10 * GIB),  # before: 14G free
+            VramSnapshot(total=24 * GIB, used=2 * GIB),   # after the claim: 22G
+            maker=maker,
+            make_room=True,
+        )
+        await orch.ensure_ready("big")
+        assert maker.calls == [(20 * GIB, 0)]
+        assert [m for m, _, _ in backends["vl"].loads] == ["big"]
+
+    async def test_a_claim_that_freed_too_little_still_refuses(
+        self, tmp_path, clock, alerter
+    ):
+        maker = FakeRoomMaker()
+        orch, backends = self._build(
+            tmp_path,
+            clock,
+            alerter,
+            VramSnapshot(total=24 * GIB, used=10 * GIB),  # stays short after
+            maker=maker,
+            make_room=True,
+        )
+        with pytest.raises(NotEnoughVram):
+            await orch.ensure_ready("big")
+        assert maker.calls, "the claim was attempted"
+        assert backends["vl"].loads == []
+
+    async def test_a_failing_room_maker_degrades_to_the_refusal(
+        self, tmp_path, clock, alerter
+    ):
+        orch, backends = self._build(
+            tmp_path,
+            clock,
+            alerter,
+            VramSnapshot(total=24 * GIB, used=10 * GIB),
+            maker=FakeRoomMaker(fail=True),
+            make_room=True,
+        )
+        with pytest.raises(NotEnoughVram):  # never the driver's own error
+            await orch.ensure_ready("big")
+        assert backends["vl"].loads == []
+        assert len(alerter.alerts) == 1
+
+    async def test_no_claim_when_the_model_physically_fits(
+        self, tmp_path, clock, alerter
+    ):
+        maker = FakeRoomMaker()
+        orch, backends = self._build(
+            tmp_path,
+            clock,
+            alerter,
+            VramSnapshot(total=24 * GIB, used=2 * GIB),  # 22G free, 20G needed
+            maker=maker,
+            make_room=True,
+        )
+        await orch.ensure_ready("big")
+        assert maker.calls == []
+        assert [m for m, _, _ in backends["vl"].loads] == ["big"]
+
+    async def test_status_reports_the_setting(self, tmp_path, clock, alerter):
+        orch, _ = self._build(
+            tmp_path,
+            clock,
+            alerter,
+            VramSnapshot(total=24 * GIB, used=2 * GIB),
+            make_room=True,
+        )
+        assert (await orch.status())["make_room"] is True
+
+
 class TestFitRefusal:
     async def test_no_fit_raises_alerts_and_never_kills(self, parts):
         orch, probe, backends, _, alerter, _ = parts
@@ -476,8 +606,8 @@ class TestReserveFloor:
     partition and never shrink the slice.
     """
 
-    def _parts(self, tmp_path, clock, alerter, probe, reserve_gb):
-        config = make_config(reserve_gb=reserve_gb)
+    def _parts(self, tmp_path, clock, alerter, probe, reserve_gb, **over):
+        config = make_config(reserve_gb=reserve_gb, **over)
         backends = {
             "oll": FakeBackend("oll"),
             "vl": FakeBackend("vl", url="http://fake:8000"),
@@ -486,7 +616,10 @@ class TestReserveFloor:
             tmp_path / "learned.json",
             seeds={"small": 8 * GIB, "tiny": 1 * GIB, "big": 20 * GIB},
         )
-        orch = Orchestrator(config, probe, backends, estimates, alerter, clock)
+        orch = Orchestrator(
+            config, probe, backends, estimates, alerter, clock,
+            room_maker=FakeRoomMaker() if over.get("make_room") else None,
+        )
         return orch, backends
 
     async def test_desktop_bloat_cannot_starve_the_slice(
@@ -527,9 +660,15 @@ class TestReserveFloor:
         self, tmp_path, clock, alerter
     ):
         """A model coload does not manage is the desktop's problem, exactly
-        like a game: it gets paged, not budgeted."""
-        probe = FakeProbe(VramSnapshot(total=32 * GIB, used=30 * GIB))
-        orch, backends = self._parts(tmp_path, clock, alerter, probe, reserve_gb=21)
+        like a game: it gets paged, not budgeted. The slice admits the load
+        however occupied the card measures; make_room does the paging."""
+        probe = FakeProbe(
+            VramSnapshot(total=32 * GIB, used=30 * GIB),  # desktop-occupied
+            VramSnapshot(total=32 * GIB, used=4 * GIB),   # after the claim
+        )
+        orch, backends = self._parts(
+            tmp_path, clock, alerter, probe, reserve_gb=21, make_room=True
+        )
         backends["oll"].ready.add("somebody-elses-model")
 
         await orch.ensure_ready("big")

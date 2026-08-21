@@ -15,11 +15,22 @@ buffer_pct: 0.10
 # Opt-in: lock a fixed slice of the card for coload's models. When set, the
 # admission budget never falls below this figure minus what coload's own
 # resident models are estimated to hold, however much out-of-band processes
-# (a game, an editor, a browser) have taken; the OS pages desktop memory out
-# when the engine actually allocates. Use it when other GPU work on the box
-# must never starve the models; leave it off to keep the purely measured
-# budget, where the buffer above protects the desktop instead.
+# (a game, an editor, a browser) have taken. Use it when other GPU work on
+# the box must never starve the models; leave it off to keep the purely
+# measured budget, where the buffer above protects the desktop instead.
+# Pairs with make_room below: admission is a promise, make_room is what
+# physically clears the card to keep it.
 # reserve_gb: 21
+
+# Opt-in: when an admitted model does not physically fit the live
+# measurement, briefly claim the bytes it needs so the OS pages out-of-band
+# memory to system RAM, release them, and start the engine against a card
+# that measures clean. Matters for engines that size themselves from a
+# measurement before allocating anything (vLLM): they see the occupied card
+# and refuse their own start. Only the OS's paging is used; out-of-band
+# processes lose performance, never correctness, and nothing is evicted.
+# Off (the default) refuses a physical shortfall cleanly, with an alert.
+# make_room: true
 
 idle_ttl_seconds: 900       # stop a backend after this long idle (0 disables)
 watchdog_interval_s: 10     # how often the watchdog polls total VRAM

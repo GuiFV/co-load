@@ -353,3 +353,9 @@ class TestReserveSetting:
         for bad in (0, -3):
             with pytest.raises(ValidationError):
                 self._minimal(reserve_gb=bad)
+
+    def test_make_room_defaults_to_off(self):
+        assert self._minimal().make_room is False
+
+    def test_make_room_can_be_enabled(self):
+        assert self._minimal(make_room=True).make_room is True

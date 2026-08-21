@@ -117,6 +117,15 @@ class Config(BaseModel):
     # is paged out to system RAM, so out-of-band users lose performance,
     # never correctness. None (the default) keeps the purely measured budget.
     reserve_gb: float | None = Field(default=None, gt=0)
+    # Opt-in: when an admitted model does not physically fit the live
+    # measurement, briefly claim the bytes it needs so the OS pages
+    # out-of-band memory to system RAM, release them, and then start the
+    # engine against a card that measures clean. Without it (the default), a
+    # physical shortfall refuses the load cleanly, with an alert, instead of
+    # starting an engine that would fail its own sizing arithmetic. Only the
+    # OS's own paging is used: out-of-band processes lose performance, never
+    # correctness, and nothing is ever evicted.
+    make_room: bool = False
     idle_ttl_seconds: float = Field(default=900, ge=0)
     # Opt-in: when a requested model doesn't fit, evict models COLOAD ITSELF
     # loaded (least-recently-used first) to make room, before refusing. Never
