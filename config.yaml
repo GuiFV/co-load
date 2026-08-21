@@ -39,6 +39,15 @@ port: 8800                  # gateway port
 # Learned VRAM estimates are cached here after real loads refine the seeds.
 estimates_path: ".coload/learned_estimates.json"
 
+# The gateway's own record: every load, refusal and eviction, in a rotating
+# file, so a decision made while nobody was watching can still be read later.
+# The console gets the same lines either way. `path: null` disables the file.
+log:
+  path: ".coload/coload.log"
+  level: "INFO"
+  max_bytes: 10485760       # rotate at 10 MiB
+  backup_count: 5           # keep this many rotated files
+
 alert:
   channels: [log]           # add "webhook" to POST alerts as JSON
   # webhook_url: "http://localhost:9999/alert"

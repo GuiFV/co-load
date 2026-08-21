@@ -277,6 +277,50 @@ class TestShippedDefaults:
         assert cfg.engines["vllm"].stop is not None  # compose needs a stop command
 
 
+class TestLogSetting:
+    """The gateway keeps its own rotating log file; console-only is opt-out."""
+
+    def _minimal(self, **over):
+        base = {
+            "engines": {
+                "ollama": {
+                    "kind": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "models": {"m": {"est_vram_gb": 8}},
+                }
+            },
+        }
+        base.update(over)
+        return Config.model_validate(base)
+
+    def test_defaults_to_a_rotating_file(self):
+        from pathlib import Path
+
+        config = self._minimal()
+        assert config.log.path == Path(".coload/coload.log")
+        assert config.log.level == "INFO"
+        assert config.log.max_bytes > 0
+        assert config.log.backup_count > 0
+
+    def test_null_path_disables_the_file(self):
+        config = self._minimal(log={"path": None})
+        assert config.log.path is None
+
+    def test_level_is_normalized_case_insensitively(self):
+        config = self._minimal(log={"level": "debug"})
+        assert config.log.level == "DEBUG"
+
+    def test_unknown_level_is_rejected(self):
+        with pytest.raises(ValidationError, match="level"):
+            self._minimal(log={"level": "verbose"})
+
+    def test_rotation_bounds_must_be_sane(self):
+        with pytest.raises(ValidationError):
+            self._minimal(log={"max_bytes": 0})
+        with pytest.raises(ValidationError):
+            self._minimal(log={"backup_count": -1})
+
+
 class TestReserveSetting:
     """reserve_gb locks a fixed slice of the card for coload; off by default."""
 

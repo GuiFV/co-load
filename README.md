@@ -103,8 +103,10 @@ scripts\windows\install-autostart.cmd
 ```
 
 Drops a launcher into your Startup folder that starts the gateway hidden at
-every logon (no admin rights needed) and starts it immediately. Logs go to
-`%LOCALAPPDATA%\coload\coload.log`. Remove with
+every logon (no admin rights needed) and starts it immediately. The gateway
+keeps its own rotating log (the `log` section under Configuration); the
+launcher additionally captures the raw console, engine start/stop command
+output included, to `%LOCALAPPDATA%\coload\coload.log`. Remove with
 `scripts\windows\uninstall-autostart.cmd`.
 
 ## Using from WSL
@@ -183,6 +185,11 @@ What to change, and why:
   desktop.
 - **`idle_ttl_seconds`** (default `900`): lower frees VRAM sooner but means
   more cold starts; `0` disables idle-stop entirely.
+- **`log.path`** (default `.coload/coload.log`): the gateway's own record of
+  every load, refusal and eviction, in a rotating file. Its worth shows up
+  after the fact: a model that was refused overnight is diagnosed from this
+  file in the morning, alongside exactly what was resident at the time. The
+  console shows the same lines; `null` keeps only the console.
 - **`engines.vllm.start` / `stop`**: the default drives the bundled
   docker-compose service. Running vLLM bare-metal instead? Use the commented
   `vllm-bare` block: a non-detached `vllm serve` needs no `stop`, coload
@@ -201,6 +208,9 @@ What to change, and why:
 | `watchdog_interval_s` | `10` | Watchdog poll interval |
 | `host` / `port` | `127.0.0.1` / `8800` | Gateway bind |
 | `estimates_path` | `.coload/learned_estimates.json` | Where learned VRAM figures are cached |
+| `log.path` | `.coload/coload.log` | Rotating file holding the gateway's own record (loads, refusals, evictions). `null` for console-only |
+| `log.level` | `INFO` | Log level, applied to console and file alike |
+| `log.max_bytes` / `log.backup_count` | 10 MiB / `5` | Rotate the file at this size; keep this many rotated copies |
 | `alert.channels` | `[log]` | `log` and/or `webhook` (needs `alert.webhook_url`) |
 | `engines.<name>.kind` | (required) | `ollama` or `vllm` |
 | `engines.<name>.start` / `stop` | (vllm) | Command templates. `stop` is optional; set it when `start` detaches (e.g. `docker compose up -d` / `docker compose stop`) |

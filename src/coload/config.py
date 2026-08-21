@@ -6,11 +6,12 @@ touches the GPU, the network, or backend processes.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 GIB = 2**30
 
@@ -64,6 +65,29 @@ class EngineConfig(BaseModel):
         return self
 
 
+class LogConfig(BaseModel):
+    """Where the gateway's own record of events ends up.
+
+    The console handler is always on. ``path`` adds a rotating file, so
+    decisions (loads, refusals, evictions) survive the console they scrolled
+    off, or that was never attached on a box that starts the gateway at
+    logon. Set it to null for console-only logging.
+    """
+
+    path: Path | None = Path(".coload/coload.log")
+    level: str = "INFO"
+    max_bytes: int = Field(default=10 * 2**20, gt=0)
+    backup_count: int = Field(default=5, ge=0)
+
+    @field_validator("level")
+    @classmethod
+    def _known_level(cls, value: str) -> str:
+        name = value.upper()
+        if name not in logging.getLevelNamesMapping():
+            raise ValueError(f"unknown log level '{value}'")
+        return name
+
+
 class AlertConfig(BaseModel):
     channels: list[Literal["log", "webhook"]] = Field(default_factory=lambda: ["log"])
     webhook_url: str | None = None
@@ -104,6 +128,7 @@ class Config(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8800
     estimates_path: Path = Path(".coload/learned_estimates.json")
+    log: LogConfig = Field(default_factory=LogConfig)
     alert: AlertConfig = Field(default_factory=AlertConfig)
     engines: dict[str, EngineConfig]
 

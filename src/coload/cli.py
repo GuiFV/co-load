@@ -181,19 +181,22 @@ def _serve(args: argparse.Namespace) -> int:  # pragma: no cover - runs a server
     import uvicorn
 
     from .config import load_config, resolve_config_path
+    from .logs import configure_logging
     from .runtime import build_runtime
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-    )
     config_path = resolve_config_path(args.config)
-    logging.getLogger("coload").info("using config: %s", config_path)
     config = load_config(config_path)
+    configure_logging(config.log)
+    logging.getLogger("coload").info("using config: %s", config_path)
     runtime = build_runtime(config)
     uvicorn.run(
         runtime.app,
         host=args.host or config.host,
         port=args.port or config.port,
+        # One logging tree: with no config of its own, uvicorn's records
+        # propagate to the root handlers installed above, so the log file
+        # holds the whole gateway story rather than the orchestrator's half.
+        log_config=None,
     )
     return 0
 
